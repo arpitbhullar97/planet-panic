@@ -1,5 +1,5 @@
 // ─── Config ───────────────────────────────────────────────────
-const SERVER_URL = 'https://repair-oxidant-critter.ngrok-free.app';
+const SERVER_URL = 'https://planet-panic-production.up.railway.app';
 // ─── State ────────────────────────────────────────────────────
 let socket = null;
 let myId = null;
