@@ -1,488 +1,482 @@
-// ─── Server URL ───────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────
 const SERVER_URL = 'https://planet-panic-production.up.railway.app';
 
 // ─── State ────────────────────────────────────────────────────
-let socket = null;
-let myId = null;
-let roomCode = null;
-let isHost = false;
-let gameState = 'home';
-let players = {};
-let platform = { x: 240, y: 340, radius: 195 };
-let particles = [];
-let stars = [];
-let shockwaves = [];
-let animId, lastTime = 0;
-let shakeX = 0, shakeY = 0, shakeTimer = 0;
-let shrinkAnim = 0; // flashes platform edge on shrink
+let socket=null, myId=null, roomCode=null, isHost=false;
+let gameState='home';
+let players={};
+let ropePos=0.5;       // 0=left wins, 1=right wins, 0.5=center
+let leftId=null, rightId=null;
+let particles=[], stars=[], animId, lastTime=0;
+let shakeX=0, shakeTimer=0;
+let roundWinner=null;
+let ropePulse=0;
+let groundY=0;
+let leftTaps=0, rightTaps=0; // visual feedback only
 
-// ─── Canvas ───────────────────────────────────────────────────
-const canvas = document.getElementById('gc');
-const ctx = canvas.getContext('2d');
-const W = 480, H = 640;
+const W=480, H=640;
+const canvas=document.getElementById('gc');
+const ctx=canvas.getContext('2d');
 
-function resizeCanvas() {
-  const maxW = Math.min(window.innerWidth, W);
-  const maxH = Math.min(window.innerHeight, H);
-  let w = maxW, h = maxW * (H / W);
-  if (h > maxH) { h = maxH; w = h * (W / H); }
-  canvas.width = W; canvas.height = H;
-  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+function resizeCanvas(){
+  const maxW=Math.min(window.innerWidth,W);
+  const maxH=Math.min(window.innerHeight,H);
+  let w=maxW, h=maxW*(H/W);
+  if(h>maxH){h=maxH;w=h*(W/H);}
+  canvas.width=W; canvas.height=H;
+  canvas.style.width=w+'px'; canvas.style.height=h+'px';
 }
 resizeCanvas();
-window.addEventListener('resize', resizeCanvas);
+window.addEventListener('resize',resizeCanvas);
 
 // ─── Stars ────────────────────────────────────────────────────
-function mkStars() {
-  stars = [];
-  for (let i = 0; i < 100; i++) stars.push({
-    x: Math.random() * W, y: Math.random() * H,
-    r: Math.random() * 1.4 + 0.2,
-    a: Math.random() * 0.5 + 0.1,
-    tw: Math.random() * Math.PI * 2,
-    spd: Math.random() * 0.03 + 0.005,
+function mkStars(){
+  stars=[];
+  for(let i=0;i<80;i++) stars.push({
+    x:Math.random()*W, y:Math.random()*H*0.5,
+    r:Math.random()*1.3+0.2, a:Math.random()*0.5+0.1,
+    tw:Math.random()*Math.PI*2, spd:Math.random()*0.02+0.005
   });
 }
 mkStars();
 
 // ─── Screen helpers ───────────────────────────────────────────
-function hideAllScreens() {
-  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+function hideAllScreens(){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.add('hidden'));
   document.getElementById('hud').classList.add('hidden');
-  document.getElementById('dead-banner').style.display = 'none';
   document.getElementById('tap-hint').classList.add('hidden');
 }
-function showScreen(id) {
+function showScreen(id){
   hideAllScreens();
-  if (id) document.getElementById(id).classList.remove('hidden');
+  if(id) document.getElementById(id).classList.remove('hidden');
 }
-function showHUD(show) {
-  document.getElementById('hud').classList.toggle('hidden', !show);
+function showHUD(show){ document.getElementById('hud').classList.toggle('hidden',!show); }
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
 }
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
-}
-function setupLobbyScreen() {
+function setupLobbyScreen(){
   showScreen('screen-lobby');
-  document.getElementById('lobby-code').textContent = roomCode;
-  document.getElementById('btn-start').style.display = isHost ? 'block' : 'none';
-  document.getElementById('waiting-msg').style.display = isHost ? 'none' : 'block';
+  document.getElementById('lobby-code').textContent=roomCode;
+  document.getElementById('btn-start').style.display=isHost?'block':'none';
+  document.getElementById('waiting-msg').style.display=isHost?'none':'block';
   updatePlayerList();
 }
-function updatePlayerList() {
-  const list = document.getElementById('player-list');
-  list.innerHTML = '';
-  Object.values(players).forEach((p, i) => {
-    const div = document.createElement('div');
-    div.className = 'player-item';
-    div.innerHTML = `<div class="player-dot" style="background:${p.color}"></div>
-      <span>${p.name}</span>${i === 0 ? '<span class="player-host">host</span>' : ''}`;
+function updatePlayerList(){
+  const list=document.getElementById('player-list');
+  list.innerHTML='';
+  Object.values(players).forEach((p,i)=>{
+    const div=document.createElement('div');
+    div.className='player-item';
+    div.innerHTML=`<div class="player-dot" style="background:${p.color}"></div>
+      <span>${p.name}</span>${i===0?'<span class="player-host">host</span>':''}`;
     list.appendChild(div);
   });
 }
 
 // ─── UI actions ───────────────────────────────────────────────
-function getName() { return document.getElementById('input-name').value.trim() || 'Player'; }
-function goCreate() { connectSocket(); socket.emit('create_room', { name: getName() }); }
-function goJoin()   { connectSocket(); showScreen('screen-join'); }
-function joinRoom() {
-  const code = document.getElementById('input-code').value.trim().toUpperCase();
-  if (code.length < 5) { showToast('Enter full room code'); return; }
-  socket.emit('join_room', { code, name: getName() });
+function getName(){ return document.getElementById('input-name').value.trim()||'Player'; }
+function goCreate(){ connectSocket(); socket.emit('create_room',{name:getName()}); }
+function goJoin(){ connectSocket(); showScreen('screen-join'); }
+function joinRoom(){
+  const code=document.getElementById('input-code').value.trim().toUpperCase();
+  if(code.length<5){showToast('Enter full room code');return;}
+  socket.emit('join_room',{code,name:getName()});
 }
-function startGame() { socket.emit('start_game'); }
-function leaveRoom() {
-  if (socket) socket.disconnect();
-  socket = null; myId = null; roomCode = null; isHost = false;
-  players = {}; showScreen('screen-home'); gameState = 'home';
+function startGame(){ socket.emit('start_game'); }
+function leaveRoom(){
+  if(socket) socket.disconnect();
+  socket=null; myId=null; roomCode=null; isHost=false; players={};
+  showScreen('screen-home'); gameState='home';
 }
 
 // ─── Socket ───────────────────────────────────────────────────
-function connectSocket() {
-  if (socket && socket.connected) return;
-  socket = io(SERVER_URL, { extraHeaders: { 'ngrok-skip-browser-warning': 'true' } });
+function connectSocket(){
+  if(socket&&socket.connected) return;
+  socket=io(SERVER_URL,{extraHeaders:{'ngrok-skip-browser-warning':'true'}});
   bindSocketEvents();
 }
 
-function bindSocketEvents() {
-  socket.on('connect', () => { myId = socket.id; });
+function bindSocketEvents(){
+  socket.on('connect',()=>{ myId=socket.id; });
 
-  socket.on('room_created', (data) => {
-    roomCode = data.code; myId = data.you; isHost = true;
-    players = data.players; gameState = 'lobby';
+  socket.on('room_created',(data)=>{
+    roomCode=data.code; myId=data.you; isHost=true;
+    players=data.players; gameState='lobby';
     setupLobbyScreen(); startRenderLoop();
   });
-  socket.on('room_joined', (data) => {
-    roomCode = data.code; myId = data.you; isHost = false;
-    players = data.players; gameState = 'lobby';
+  socket.on('room_joined',(data)=>{
+    roomCode=data.code; myId=data.you; isHost=false;
+    players=data.players; gameState='lobby';
     setupLobbyScreen(); startRenderLoop();
   });
-  socket.on('player_joined', (data) => { players = data.players; if (gameState==='lobby') updatePlayerList(); });
-  socket.on('player_left',   (data) => { players = data.players; if (gameState==='lobby') updatePlayerList(); });
+  socket.on('player_joined',(data)=>{ players=data.players; if(gameState==='lobby') updatePlayerList(); });
+  socket.on('player_left',  (data)=>{ players=data.players; if(gameState==='lobby') updatePlayerList(); });
 
-  socket.on('countdown', (data) => {
-    gameState = 'countdown'; hideAllScreens();
+  socket.on('countdown',(data)=>{
+    gameState='countdown'; hideAllScreens();
     document.getElementById('screen-countdown').classList.remove('hidden');
-    const el = document.getElementById('countdown-num');
-    el.textContent = data.count;
-    el.style.animation = 'none'; el.offsetHeight;
-    el.style.animation = 'pop 0.4s ease-out';
+    const el=document.getElementById('countdown-num');
+    el.textContent=data.count;
+    el.style.animation='none'; el.offsetHeight;
+    el.style.animation='pop 0.4s ease-out';
   });
 
-  socket.on('round_start', (data) => {
-    players = data.players;
-    platform = data.platform;
-    gameState = 'playing';
-    particles = []; shockwaves = []; shrinkAnim = 0;
+  socket.on('round_start',(data)=>{
+    players=data.players;
+    leftId=data.leftId; rightId=data.rightId;
+    ropePos=0.5; leftTaps=0; rightTaps=0;
+    roundWinner=null; particles=[];
+    gameState='playing';
     hideAllScreens(); showHUD(true);
     document.getElementById('tap-hint').classList.remove('hidden');
-    updateAliveHUD();
+    // Update player name labels
+    const lp=players[leftId], rp=players[rightId];
+    document.getElementById('left-name').textContent=lp?lp.name:'';
+    document.getElementById('right-name').textContent=rp?rp.name:'';
+    document.getElementById('left-taps').textContent='';
+    document.getElementById('right-taps').textContent='';
   });
 
-  socket.on('state', (data) => {
-    if (gameState !== 'playing') return;
-    const prev = players;
-    players = data.players;
-    platform = data.platform;
-
-    // Death explosions
-    for (const id in prev) {
-      if (prev[id]?.alive && players[id] && !players[id].alive) {
-        spawnExplosion(prev[id].x, prev[id].y, prev[id].color);
-        if (id === myId) { triggerShake(10, 18); }
-        else triggerShake(4, 8);
-      }
-    }
-    // Bump shockwaves
-    if (data.bumps) {
-      for (const b of data.bumps) {
-        shockwaves.push({ x: b.x, y: b.y, r: 4, life: 1, color: b.color });
-        if (b.id === myId) triggerShake(5, 10);
-      }
-    }
-
-    const me = players[myId];
-    if (me && !me.alive) {
-      document.getElementById('dead-banner').style.display = 'block';
-      document.getElementById('tap-hint').classList.add('hidden');
-    }
-    updateAliveHUD();
+  socket.on('state',(data)=>{
+    if(gameState!=='playing') return;
+    const prev=ropePos;
+    ropePos=data.ropePos;
+    // Pulse rope on movement
+    if(Math.abs(ropePos-prev)>0.003) ropePulse=1;
+    // Shake when near edge
+    if(ropePos<0.1||ropePos>0.9) triggerShake(3,6);
+    document.getElementById('left-taps').textContent=data.leftTaps||'';
+    document.getElementById('right-taps').textContent=data.rightTaps||'';
   });
 
-  socket.on('platform_shrink', (data) => {
-    platform = data.platform;
-    shrinkAnim = 1.0; // trigger flash
-    triggerShake(5, 12);
-    spawnShrinkRing();
+  socket.on('tap_effect',(data)=>{
+    // Visual tap burst
+    const isLeft=data.side==='left';
+    const x=isLeft?120:360, y=groundY-80;
+    spawnTapBurst(x,y,data.color);
+    if(data.side==='left') leftTaps++;
+    else rightTaps++;
+    if(data.id===myId) triggerShake(2,4);
   });
 
-  socket.on('round_end', (data) => {
-    gameState = 'results'; hideAllScreens();
-    document.getElementById('screen-results').classList.remove('hidden');
-    document.getElementById('winner-name').textContent =
-      data.winner ? data.winner.name.toUpperCase() : 'DRAW';
-    document.getElementById('winner-name').style.color =
-      data.winner ? data.winner.color : '#718096';
-    const el = document.getElementById('results-scores');
-    el.innerHTML = '';
-    data.scores.forEach((s, i) => {
-      const row = document.createElement('div');
-      row.className = 'score-row';
-      row.innerHTML = `<span class="score-rank">${i+1}.</span>
-        <span style="background:${s.color};width:10px;height:10px;border-radius:50%;
-          display:inline-block;flex-shrink:0;"></span>
-        <span class="score-name">${s.name}</span>
-        <span class="score-pts">${s.alive?'👑 winner':s.score+' pts'}</span>`;
-      el.appendChild(row);
-    });
+  socket.on('round_end',(data)=>{
+    gameState='results'; roundWinner=data.winner;
+    // Big explosion at loser side
+    const loserX=data.winner.side==='left'?360:120;
+    spawnExplosion(loserX,groundY-80,data.loserColor);
+    triggerShake(14,30);
+    setTimeout(()=>{
+      hideAllScreens();
+      document.getElementById('screen-results').classList.remove('hidden');
+      document.getElementById('winner-name').textContent=data.winner.name.toUpperCase();
+      document.getElementById('winner-name').style.color=data.winner.color;
+      const el=document.getElementById('results-scores');
+      el.innerHTML=`<div class="score-row">
+        <span class="player-dot" style="background:${data.winner.color};display:inline-block;border-radius:50%;flex-shrink:0;"></span>
+        <span class="score-name">${data.winner.name}</span>
+        <span class="score-pts">👑 winner</span>
+      </div>`;
+    },1200);
   });
 
-  socket.on('back_to_lobby', () => { gameState = 'lobby'; setupLobbyScreen(); });
-  socket.on('error', (data) => { showToast(data.msg); });
-  socket.on('disconnect', () => {
+  socket.on('back_to_lobby',()=>{ gameState='lobby'; setupLobbyScreen(); });
+  socket.on('error',(data)=>{ showToast(data.msg); });
+  socket.on('disconnect',()=>{
     showToast('Disconnected'); hideAllScreens();
-    showScreen('screen-home'); gameState = 'home'; socket = null;
+    showScreen('screen-home'); gameState='home'; socket=null;
   });
 }
 
-function updateAliveHUD() {
-  const alive = Object.values(players).filter(p => p.alive).length;
-  document.getElementById('alive-val').textContent = alive;
-  document.getElementById('score-val').textContent = '';
-  document.getElementById('timer-val').textContent = '';
+// ─── Input — tap to push ──────────────────────────────────────
+function doTap(){
+  if(gameState!=='playing') return;
+  socket.emit('tap');
 }
 
-// ─── Input ────────────────────────────────────────────────────
-let lastDash = 0;
-function dash(dir) {
-  const now = Date.now();
-  if (now - lastDash < 80) return;
-  lastDash = now;
-  if (gameState !== 'playing') return;
-  const me = players[myId];
-  if (!me || !me.alive) return;
-  socket.emit('dash', { dir });
-  // Local dash particles
-  spawnDashTrail(me.x, me.y, me.color, dir);
-}
-
-canvas.addEventListener('touchstart', e => {
+// Tap anywhere on YOUR half of the screen
+canvas.addEventListener('touchstart',e=>{
   e.preventDefault();
-  const rect = canvas.getBoundingClientRect();
-  for (const t of e.changedTouches) {
-    const tx = (t.clientX - rect.left) * (W / rect.width);
-    dash(tx < W / 2 ? -1 : 1);
-  }
-}, { passive: false });
+  doTap();
+},{passive:false});
 
-canvas.addEventListener('click', e => {
-  const rect = canvas.getBoundingClientRect();
-  const tx = (e.clientX - rect.left) * (W / rect.width);
-  dash(tx < W / 2 ? -1 : 1);
-});
-
-window.addEventListener('keydown', e => {
-  if (e.key === 'ArrowLeft'  || e.key === 'a') dash(-1);
-  if (e.key === 'ArrowRight' || e.key === 'd') dash(1);
+canvas.addEventListener('click',()=>{ doTap(); });
+window.addEventListener('keydown',e=>{
+  if(e.key===' '||e.key==='ArrowLeft'||e.key==='ArrowRight'||
+     e.key==='a'||e.key==='d') doTap();
 });
 
 // ─── Effects ──────────────────────────────────────────────────
-function triggerShake(intensity, frames) {
-  shakeX = intensity; shakeTimer = frames;
+function triggerShake(intensity,frames){
+  shakeX=intensity; shakeTimer=frames;
 }
-function spawnExplosion(x, y, color) {
-  for (let i = 0; i < 24; i++) {
-    const a = (i / 24) * Math.PI * 2 + Math.random() * 0.3;
-    const spd = 2 + Math.random() * 6;
-    particles.push({ x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
-      life: 1, color, r: 2+Math.random()*4 });
-  }
-  // White flash particle
-  particles.push({ x, y, vx:0, vy:0, life:0.5, color:'#ffffff', r:18 });
-}
-function spawnDashTrail(x, y, color, dir) {
-  for (let i = 0; i < 7; i++) {
-    particles.push({
-      x: x + (Math.random()-0.5)*8,
-      y: y + (Math.random()-0.5)*8,
-      vx: -dir * (1+Math.random()*3),
-      vy: (Math.random()-0.5)*1.5,
-      life: 0.6, color, r: 1+Math.random()*3
-    });
+function spawnTapBurst(x,y,color){
+  for(let i=0;i<8;i++){
+    const a=Math.random()*Math.PI*2, spd=1+Math.random()*4;
+    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-2,
+      life:0.7,color,r:2+Math.random()*3});
   }
 }
-function spawnShrinkRing() {
-  const pr = platform.radius + 22; // spawn at old radius
-  for (let i = 0; i < 36; i++) {
-    const a = (i / 36) * Math.PI * 2;
-    particles.push({
-      x: platform.x + Math.cos(a) * pr,
-      y: platform.y + Math.sin(a) * pr,
-      vx: Math.cos(a) * (1.5 + Math.random()*2),
-      vy: Math.sin(a) * (1.5 + Math.random()*2),
-      life: 1, color: '#f97316', r: 2+Math.random()*3
-    });
+function spawnExplosion(x,y,color){
+  for(let i=0;i<30;i++){
+    const a=(i/30)*Math.PI*2, spd=2+Math.random()*8;
+    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
+      life:1,color,r:3+Math.random()*5});
   }
+  particles.push({x,y,vx:0,vy:0,life:0.4,color:'#ffffff',r:30});
 }
 
-// ─── Render ───────────────────────────────────────────────────
-function draw(ts) {
-  const dt = Math.min((ts - lastTime) / 16.67, 2.5);
-  lastTime = ts;
-
-  // Screen shake
-  let sx = 0, sy = 0;
-  if (shakeTimer > 0) {
-    sx = (Math.random()-0.5) * shakeX;
-    sy = (Math.random()-0.5) * shakeX;
-    shakeTimer -= dt; shakeX *= 0.88;
-  }
-
-  ctx.clearRect(0, 0, W, H);
+// ─── Draw ─────────────────────────────────────────────────────
+function drawSumo(x,y,color,facing,squish,isMe){
+  // squish = 0 normal, 1 = squished (during push)
+  const sx=1+squish*0.3, sy=1-squish*0.15;
   ctx.save();
-  ctx.translate(sx, sy);
+  ctx.translate(x,y);
+  ctx.scale(sx,sy);
 
-  // ── Background ──
-  ctx.fillStyle = '#07080f';
-  ctx.fillRect(-20, -20, W+40, H+40);
+  // Shadow
+  ctx.beginPath();
+  ctx.ellipse(0,2,26,8,0,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fill();
 
-  // ── Stars ──
-  for (const s of stars) {
-    s.tw += s.spd * dt;
-    const a = s.a * (0.6 + 0.4 * Math.sin(s.tw));
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
-    ctx.fillStyle = `rgba(200,210,255,${a})`; ctx.fill();
+  // Body — big round sumo
+  const bodyGrd=ctx.createRadialGradient(-8,-10,2,0,0,34);
+  bodyGrd.addColorStop(0,lighten(color,60));
+  bodyGrd.addColorStop(1,color);
+  ctx.beginPath(); ctx.arc(0,0,32,0,Math.PI*2);
+  ctx.fillStyle=bodyGrd; ctx.fill();
+
+  // Belt (mawashi)
+  ctx.beginPath();
+  ctx.ellipse(0,8,22,10,0,0,Math.PI*2);
+  ctx.fillStyle=darken(color,60); ctx.fill();
+  // Belt knot
+  ctx.beginPath(); ctx.arc(facing>0?10:-10,8,6,0,Math.PI*2);
+  ctx.fillStyle=darken(color,80); ctx.fill();
+
+  // Face
+  const fx=facing*8;
+  // Eyes
+  ctx.beginPath(); ctx.arc(fx-6,-8,5,0,Math.PI*2);
+  ctx.fillStyle='#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(fx+6,-8,5,0,Math.PI*2);
+  ctx.fillStyle='#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(fx-6+facing*2,-8,2.5,0,Math.PI*2);
+  ctx.fillStyle='#1a1a2e'; ctx.fill();
+  ctx.beginPath(); ctx.arc(fx+6+facing*2,-8,2.5,0,Math.PI*2);
+  ctx.fillStyle='#1a1a2e'; ctx.fill();
+
+  // Determined eyebrows
+  ctx.strokeStyle='#1a1a2e'; ctx.lineWidth=2.5; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(fx-10,-14); ctx.lineTo(fx-3,-12); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(fx+3,-12); ctx.lineTo(fx+10,-14); ctx.stroke();
+
+  // Mouth
+  ctx.beginPath();
+  ctx.arc(fx,0,6,0.2,Math.PI-0.2);
+  ctx.strokeStyle='#1a1a2e'; ctx.lineWidth=2; ctx.stroke();
+
+  // Arms stretched forward
+  ctx.strokeStyle=color; ctx.lineWidth=12; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(facing*20,-5);
+  ctx.lineTo(facing*38,4);
+  ctx.stroke();
+  // Fist
+  ctx.beginPath(); ctx.arc(facing*40,4,7,0,Math.PI*2);
+  ctx.fillStyle=lighten(color,40); ctx.fill();
+
+  // Topknot
+  ctx.beginPath();
+  ctx.ellipse(0,-34,5,8,0,0,Math.PI*2);
+  ctx.fillStyle='#1a1a2e'; ctx.fill();
+  ctx.beginPath(); ctx.arc(0,-36,3,0,Math.PI*2);
+  ctx.fillStyle='#333'; ctx.fill();
+
+  // Self ring
+  if(isMe){
+    ctx.beginPath(); ctx.arc(0,0,36,0,Math.PI*2);
+    ctx.strokeStyle=color+'88'; ctx.lineWidth=2; ctx.stroke();
   }
-
-  // ── Platform (always draw when not on home screen) ──
-  if (gameState !== 'home') {
-    const pr = platform.radius;
-    const px = platform.x, py = platform.y;
-
-    // Deep space void below platform
-    ctx.beginPath(); ctx.arc(px, py, pr + 40, 0, Math.PI*2);
-    const voidGrd = ctx.createRadialGradient(px, py, pr*0.5, px, py, pr+40);
-    voidGrd.addColorStop(0, 'rgba(0,0,0,0)');
-    voidGrd.addColorStop(1, 'rgba(0,0,20,0.6)');
-    ctx.fillStyle = voidGrd; ctx.fill();
-
-    // Platform fill
-    ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI*2);
-    const platGrd = ctx.createRadialGradient(px, py-pr*0.3, pr*0.1, px, py, pr);
-    platGrd.addColorStop(0,   '#2d2d52');
-    platGrd.addColorStop(0.6, '#1e1e38');
-    platGrd.addColorStop(1,   '#12121f');
-    ctx.fillStyle = platGrd; ctx.fill();
-
-    // Grid lines
-    ctx.save();
-    ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI*2); ctx.clip();
-    ctx.strokeStyle = 'rgba(120,120,200,0.07)'; ctx.lineWidth = 1;
-    for (let gx = (px-pr); gx < px+pr; gx += 36) {
-      ctx.beginPath(); ctx.moveTo(gx, py-pr); ctx.lineTo(gx, py+pr); ctx.stroke();
-    }
-    for (let gy = (py-pr); gy < py+pr; gy += 36) {
-      ctx.beginPath(); ctx.moveTo(px-pr, gy); ctx.lineTo(px+pr, gy); ctx.stroke();
-    }
-    // Center cross
-    ctx.strokeStyle = 'rgba(120,120,200,0.12)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(px-pr, py); ctx.lineTo(px+pr, py); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(px, py-pr); ctx.lineTo(px, py+pr); ctx.stroke();
-    ctx.restore();
-
-    // Danger zone outer ring (flashes on shrink)
-    const edgeFlash = shrinkAnim > 0 ? shrinkAnim : 0;
-    if (edgeFlash > 0) {
-      ctx.beginPath(); ctx.arc(px, py, pr+8, 0, Math.PI*2);
-      ctx.strokeStyle = `rgba(249,115,22,${edgeFlash * 0.8})`;
-      ctx.lineWidth = 10; ctx.stroke();
-      shrinkAnim -= 0.04 * dt;
-    }
-
-    // Platform edge
-    ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI*2);
-    ctx.strokeStyle = edgeFlash > 0.3 ? '#f97316' : '#6366f1';
-    ctx.lineWidth = 3.5; ctx.stroke();
-
-    // Inner soft glow ring
-    ctx.beginPath(); ctx.arc(px, py, pr - 5, 0, Math.PI*2);
-    ctx.strokeStyle = 'rgba(99,102,241,0.25)'; ctx.lineWidth = 8; ctx.stroke();
-
-    // ── Shockwaves ──
-    for (const sw of shockwaves) {
-      ctx.beginPath(); ctx.arc(sw.x, sw.y, sw.r, 0, Math.PI*2);
-      const alpha = Math.round(sw.life * 160).toString(16).padStart(2,'0');
-      ctx.strokeStyle = sw.color + alpha;
-      ctx.lineWidth = 3 * sw.life; ctx.stroke();
-      sw.r += 5 * dt; sw.life -= 0.05 * dt;
-    }
-    shockwaves = shockwaves.filter(s => s.life > 0);
-
-    // ── Players ──
-    for (const id in players) {
-      const p = players[id];
-      if (!p.alive) continue;
-      const isSelf = id === myId;
-
-      // Shadow
-      ctx.save();
-      ctx.beginPath(); ctx.arc(p.x, p.y + 4, 10, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill();
-      ctx.restore();
-
-      // Outer glow
-      ctx.beginPath(); ctx.arc(p.x, p.y, isSelf ? 22 : 18, 0, Math.PI*2);
-      ctx.fillStyle = p.color + (isSelf ? '28' : '18'); ctx.fill();
-
-      // Body gradient
-      ctx.beginPath(); ctx.arc(p.x, p.y, 14, 0, Math.PI*2);
-      const bg = ctx.createRadialGradient(p.x-4, p.y-5, 1, p.x, p.y, 14);
-      bg.addColorStop(0, lighten(p.color, 70));
-      bg.addColorStop(1, p.color);
-      ctx.fillStyle = bg; ctx.fill();
-
-      // Outline
-      ctx.strokeStyle = isSelf ? '#ffffff' : 'rgba(255,255,255,0.3)';
-      ctx.lineWidth = isSelf ? 2 : 1; ctx.stroke();
-
-      // Visor
-      ctx.beginPath(); ctx.arc(p.x+2, p.y-3, 5, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(0,10,40,0.75)'; ctx.fill();
-      ctx.beginPath(); ctx.arc(p.x+1, p.y-5, 2, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
-
-      // Self indicator ring
-      if (isSelf) {
-        ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI*2);
-        ctx.strokeStyle = p.color + 'cc'; ctx.lineWidth = 1.5; ctx.stroke();
-      }
-
-      // Name
-      ctx.font = `bold 9px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillText(p.name, p.x+1, p.y-21);
-      ctx.fillStyle = isSelf ? '#ffffff' : '#c0c8d8';
-      ctx.fillText(p.name, p.x, p.y-22);
-
-      // Dash cooldown arc
-      if (isSelf && p.dashCooldown > 0) {
-        const pct = 1 - (p.dashCooldown / 18);
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 20, -Math.PI/2, -Math.PI/2 + pct*Math.PI*2);
-        ctx.strokeStyle = p.color + 'bb'; ctx.lineWidth = 2.5; ctx.stroke();
-      }
-    }
-
-    // ── Control zones (mobile) ──
-    if (gameState === 'playing' && players[myId]?.alive) {
-      // Left tap zone
-      ctx.fillStyle = 'rgba(255,255,255,0.04)';
-      ctx.beginPath(); ctx.roundRect(8, H-68, W/2-16, 56, 10); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.roundRect(8, H-68, W/2-16, 56, 10); ctx.stroke();
-
-      // Right tap zone
-      ctx.fillStyle = 'rgba(255,255,255,0.04)';
-      ctx.beginPath(); ctx.roundRect(W/2+8, H-68, W/2-16, 56, 10); ctx.fill();
-      ctx.beginPath(); ctx.roundRect(W/2+8, H-68, W/2-16, 56, 10); ctx.stroke();
-
-      ctx.font = '20px monospace';
-      ctx.fillStyle = 'rgba(255,255,255,0.18)';
-      ctx.textAlign = 'center';
-      ctx.fillText('◀ dash', W*0.25, H-34);
-      ctx.fillText('dash ▶', W*0.75, H-34);
-    }
-  }
-
-  // ── Particles (always) ──
-  for (const p of particles) {
-    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0.5, p.r * p.life), 0, Math.PI*2);
-    const alpha = Math.round(p.life * 220).toString(16).padStart(2,'0');
-    ctx.fillStyle = p.color + alpha; ctx.fill();
-    p.x += p.vx * dt; p.y += p.vy * dt;
-    p.vy += 0.06 * dt; p.vx *= 0.96;
-    p.life -= 0.022 * dt;
-  }
-  particles = particles.filter(p => p.life > 0);
 
   ctx.restore();
-  animId = requestAnimationFrame(draw);
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
-function lighten(hex, amt) {
-  const r = parseInt(hex.slice(1,3),16);
-  const g = parseInt(hex.slice(3,5),16);
-  const b = parseInt(hex.slice(5,7),16);
+function draw(ts){
+  const dt=Math.min((ts-lastTime)/16.67,2.5);
+  lastTime=ts;
+
+  let sx=0,sy=0;
+  if(shakeTimer>0){
+    sx=(Math.random()-0.5)*shakeX;
+    sy=(Math.random()-0.5)*shakeX*0.5;
+    shakeTimer-=dt; shakeX*=0.85;
+  }
+
+  ctx.clearRect(0,0,W,H);
+  ctx.save();
+  ctx.translate(sx,sy);
+
+  // ── Sky background ──
+  const skyGrd=ctx.createLinearGradient(0,0,0,H*0.65);
+  skyGrd.addColorStop(0,'#0d0d1a');
+  skyGrd.addColorStop(1,'#1a1030');
+  ctx.fillStyle=skyGrd; ctx.fillRect(-10,-10,W+20,H*0.65+10);
+
+  // Stars
+  for(const s of stars){
+    s.tw+=s.spd*dt;
+    const a=s.a*(0.6+0.4*Math.sin(s.tw));
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(220,220,255,${a})`; ctx.fill();
+  }
+
+  // ── Ground / arena ──
+  groundY=H*0.62;
+  // Dirt ground
+  const groundGrd=ctx.createLinearGradient(0,groundY,0,H);
+  groundGrd.addColorStop(0,'#2d1f0e');
+  groundGrd.addColorStop(0.3,'#1a1208');
+  groundGrd.addColorStop(1,'#0a0804');
+  ctx.fillStyle=groundGrd; ctx.fillRect(-10,groundY,W+20,H-groundY+10);
+
+  // Arena circle (dohyo)
+  const arenaX=W/2, arenaY=groundY+10, arenaRX=200, arenaRY=55;
+  // Sand
+  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX,arenaRY,0,0,Math.PI*2);
+  const sandGrd=ctx.createRadialGradient(arenaX,arenaY,20,arenaX,arenaY,arenaRX);
+  sandGrd.addColorStop(0,'#c8a86a');
+  sandGrd.addColorStop(0.7,'#b8944a');
+  sandGrd.addColorStop(1,'#a07830');
+  ctx.fillStyle=sandGrd; ctx.fill();
+  // Straw border
+  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX,arenaRY,0,0,Math.PI*2);
+  ctx.strokeStyle='#7a5a20'; ctx.lineWidth=8; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX-4,arenaRY-2,0,0,Math.PI*2);
+  ctx.strokeStyle='#c8a040'; ctx.lineWidth=3; ctx.stroke();
+  // Center line
+  ctx.beginPath(); ctx.moveTo(arenaX,arenaY-arenaRY+8); ctx.lineTo(arenaX,arenaY+arenaRY-8);
+  ctx.strokeStyle='#7a5a2044'; ctx.lineWidth=2; ctx.stroke();
+
+  // ── Rope / tug bar ──
+  if(gameState==='playing'||gameState==='results'){
+    ropePulse=Math.max(0,ropePulse-0.05*dt);
+    const barY=groundY-160;
+    const barL=60, barR=W-60;
+    const barLen=barR-barL;
+
+    // Bar track
+    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barR,barY);
+    ctx.strokeStyle='#2a1a0a'; ctx.lineWidth=12; ctx.lineCap='round'; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barR,barY);
+    ctx.strokeStyle='#5a3a10'; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
+
+    // Left fill (left player color)
+    const lp=players[leftId];
+    const rp=players[rightId];
+    const fillX=barL+ropePos*barLen;
+    if(lp){
+      ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(fillX,barY);
+      ctx.strokeStyle=lp.color; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
+    }
+    if(rp){
+      ctx.beginPath(); ctx.moveTo(fillX,barY); ctx.lineTo(barR,barY);
+      ctx.strokeStyle=rp.color; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
+    }
+
+    // Danger zones
+    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barL+barLen*0.15,barY);
+    ctx.strokeStyle='rgba(239,68,68,0.4)'; ctx.lineWidth=8; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(barR-barLen*0.15,barY); ctx.lineTo(barR,barY);
+    ctx.strokeStyle='rgba(239,68,68,0.4)'; ctx.lineWidth=8; ctx.stroke();
+
+    // Knot (rope marker)
+    const kx=barL+ropePos*barLen;
+    const glow=0.5+ropePulse*0.5;
+    ctx.beginPath(); ctx.arc(kx,barY,14,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${glow*0.15})`; ctx.fill();
+    ctx.beginPath(); ctx.arc(kx,barY,10,0,Math.PI*2);
+    ctx.fillStyle='#fff'; ctx.fill();
+    ctx.beginPath(); ctx.arc(kx,barY,10,0,Math.PI*2);
+    ctx.strokeStyle='#888'; ctx.lineWidth=2; ctx.stroke();
+    // Knot detail
+    ctx.beginPath(); ctx.arc(kx-2,barY-2,3,0,Math.PI*2);
+    ctx.fillStyle='#ccc'; ctx.fill();
+
+    // Edge markers
+    ctx.fillStyle='rgba(239,68,68,0.8)';
+    ctx.font='bold 11px monospace'; ctx.textAlign='center';
+    ctx.fillText('OUT',barL,barY-18);
+    ctx.fillText('OUT',barR,barY-18);
+
+    // Arrow hints showing who's winning
+    if(ropePos<0.45&&lp){
+      ctx.fillStyle=lp.color+'cc';
+      ctx.font='16px monospace'; ctx.textAlign='center';
+      ctx.fillText('◀◀',kx-20,barY-28);
+    } else if(ropePos>0.55&&rp){
+      ctx.fillStyle=rp.color+'cc';
+      ctx.font='16px monospace'; ctx.textAlign='center';
+      ctx.fillText('▶▶',kx+20,barY-28);
+    }
+  }
+
+  // ── Sumo wrestlers ──
+  if(gameState==='playing'||gameState==='results'){
+    const lp=players[leftId], rp=players[rightId];
+    // Player positions driven by ropePos
+    // ropePos 0.5 = center, <0.5 = left winning, >0.5 = right winning
+    const baseGap=100;
+    const push=(ropePos-0.5)*2; // -1 to 1
+    const leftX=W/2-baseGap+push*60;
+    const rightX=W/2+baseGap+push*60;
+    const sy2=groundY-42;
+    const squish=Math.abs(push)*0.5;
+
+    if(lp) drawSumo(leftX,sy2,lp.color,1,squish,leftId===myId);
+    if(rp) drawSumo(rightX,sy2,rp.color,-1,squish,rightId===myId);
+
+    // Tap zone indicators
+    const isLeft=myId===leftId;
+    ctx.fillStyle='rgba(255,255,255,0.03)';
+    ctx.fillRect(0,H-80,W,80);
+    ctx.font='bold 13px monospace'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.fillText('TAP ANYWHERE TO PUSH',W/2,H-48);
+    ctx.font='11px monospace';
+    ctx.fillStyle='rgba(255,255,255,0.08)';
+    ctx.fillText(isLeft?'YOU ARE LEFT':'YOU ARE RIGHT',W/2,H-26);
+  }
+
+  // ── Particles ──
+  for(const p of particles){
+    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0.5,p.r*p.life),0,Math.PI*2);
+    const alpha=Math.round(p.life*220).toString(16).padStart(2,'0');
+    ctx.fillStyle=p.color+alpha; ctx.fill();
+    p.x+=p.vx*dt; p.y+=p.vy*dt;
+    p.vy+=0.15*dt; p.vx*=0.95;
+    p.life-=0.025*dt;
+  }
+  particles=particles.filter(p=>p.life>0);
+
+  ctx.restore();
+  animId=requestAnimationFrame(draw);
+}
+
+function lighten(hex,amt){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return `rgb(${Math.min(255,r+amt)},${Math.min(255,g+amt)},${Math.min(255,b+amt)})`;
 }
-
-function startRenderLoop() {
-  if (animId) cancelAnimationFrame(animId);
-  lastTime = performance.now();
-  animId = requestAnimationFrame(draw);
+function darken(hex,amt){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.max(0,r-amt)},${Math.max(0,g-amt)},${Math.max(0,b-amt)})`;
+}
+function startRenderLoop(){
+  if(animId) cancelAnimationFrame(animId);
+  lastTime=performance.now();
+  animId=requestAnimationFrame(draw);
 }
 startRenderLoop();

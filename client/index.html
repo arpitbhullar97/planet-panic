@@ -1,126 +1,102 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="theme-color" content="#07080f" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#0d0d1a"/>
   <title>Sumo Push</title>
-  <link rel="manifest" href="manifest.json" />
+  <link rel="manifest" href="manifest.json"/>
   <style>
-    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-    html,body { width:100%; height:100%; background:#07080f; overflow:hidden; font-family:monospace; color:#e2e8f0; }
-    #app { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-    canvas { display:block; touch-action:none; }
+    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+    html,body{width:100%;height:100%;background:#0d0d1a;overflow:hidden;font-family:monospace;color:#e2e8f0;}
+    #app{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+    canvas{display:block;touch-action:none;}
+    .screen{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;}
+    .screen.hidden{display:none;}
+    .game-title{font-size:34px;letter-spacing:5px;color:#f97316;text-shadow:0 0 30px #f9731655;text-align:center;line-height:1.2;}
+    .game-sub{font-size:11px;letter-spacing:2px;color:#3a3a4a;text-align:center;}
+    .label{font-size:10px;letter-spacing:1px;color:#4a5568;text-transform:uppercase;margin-bottom:4px;}
+    input{background:#111827;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;
+      font-family:monospace;font-size:15px;padding:12px 16px;width:100%;max-width:280px;
+      outline:none;text-align:center;letter-spacing:1px;}
+    input:focus{border-color:#f97316;}
+    input::placeholder{color:#2d3748;}
+    .btn{padding:13px 32px;border-radius:8px;font-family:monospace;font-size:13px;
+      letter-spacing:2px;cursor:pointer;border:1px solid;width:100%;max-width:280px;transition:transform 0.1s;}
+    .btn:active{transform:scale(0.97);}
+    .btn-primary{background:#f9731622;border-color:#f97316;color:#fdba74;}
+    .btn-secondary{background:transparent;border-color:#2d3748;color:#718096;}
+    .btn-start{background:#059669;border-color:#34d399;color:#d1fae5;font-size:14px;}
+    .room-code-box{background:#111827;border:1px solid #2d3748;border-radius:10px;
+      padding:14px 24px;text-align:center;width:100%;max-width:280px;}
+    .room-code{font-size:30px;letter-spacing:6px;color:#fdba74;}
+    #player-list{width:100%;max-width:280px;display:flex;flex-direction:column;gap:6px;}
+    .player-item{display:flex;align-items:center;gap:10px;background:#111827;
+      border-radius:8px;padding:8px 12px;font-size:13px;}
+    .player-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+    .player-host{font-size:10px;color:#4a5568;margin-left:auto;}
 
-    /* Screens */
-    .screen { position:absolute; top:0; left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; }
-    .screen.hidden { display:none; }
+    /* HUD — tap counters above each player */
+    #hud{position:absolute;top:0;left:0;right:0;pointer-events:none;padding:10px 16px;
+      display:flex;justify-content:space-between;align-items:flex-start;}
+    .hud-block{display:flex;flex-direction:column;align-items:center;}
+    .hud-label{font-size:9px;letter-spacing:2px;color:#2d3748;text-transform:uppercase;}
+    .hud-val{font-size:18px;color:#e2e8f0;line-height:1;}
+    #left-name{font-size:11px;color:#f97316;font-weight:bold;letter-spacing:1px;}
+    #right-name{font-size:11px;color:#6366f1;font-weight:bold;letter-spacing:1px;}
+    #left-taps{font-size:20px;color:#f97316;}
+    #right-taps{font-size:20px;color:#6366f1;}
 
-    /* Title */
-    .game-title { font-size:30px; letter-spacing:5px; color:#6366f1; text-shadow:0 0 30px #6366f155; text-align:center; line-height:1.2; }
-    .game-sub { font-size:11px; letter-spacing:2px; color:#3a3a5a; }
+    #countdown-num{font-size:100px;color:#f97316;text-shadow:0 0 60px #f97316;animation:pop 0.4s ease-out;}
+    @keyframes pop{0%{transform:scale(2.2);opacity:0}100%{transform:scale(1);opacity:1}}
+    .winner-name{font-size:24px;letter-spacing:2px;}
+    .score-row{display:flex;align-items:center;gap:10px;font-size:14px;width:100%;max-width:280px;}
+    .score-row-inner{display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;}
+    .score-rank{color:#4a5568;font-size:11px;width:16px;}
+    .score-name{flex:1;}
+    .score-pts{font-family:monospace;}
 
-    /* Inputs */
-    .label { font-size:10px; letter-spacing:1px; color:#4a5568; text-transform:uppercase; margin-bottom:4px; }
-    input { background:#111827; border:1px solid #2d3748; border-radius:8px; color:#e2e8f0;
-      font-family:monospace; font-size:15px; padding:12px 16px; width:100%; max-width:280px;
-      outline:none; text-align:center; letter-spacing:1px; }
-    input:focus { border-color:#6366f1; }
-    input::placeholder { color:#2d3748; }
+    #tap-hint{position:absolute;top:56px;left:50%;transform:translateX(-50%);
+      font-size:11px;color:#2d3748;letter-spacing:2px;pointer-events:none;
+      animation:blink 1.8s ease-in-out infinite;white-space:nowrap;}
+    @keyframes blink{0%,100%{opacity:.2}50%{opacity:.9}}
 
-    /* Buttons */
-    .btn { padding:13px 32px; border-radius:8px; font-family:monospace; font-size:13px;
-      letter-spacing:2px; cursor:pointer; border:1px solid; width:100%; max-width:280px; transition:transform 0.1s; }
-    .btn:active { transform:scale(0.97); }
-    .btn-primary  { background:#6366f122; border-color:#6366f1; color:#a5b4fc; }
-    .btn-secondary{ background:transparent; border-color:#2d3748; color:#718096; }
-    .btn-start    { background:#059669; border-color:#34d399; color:#d1fae5; font-size:14px; }
-
-    /* Room code */
-    .room-code-box { background:#111827; border:1px solid #2d3748; border-radius:10px;
-      padding:14px 24px; text-align:center; width:100%; max-width:280px; }
-    .room-code { font-size:30px; letter-spacing:6px; color:#a5b4fc; }
-
-    /* Player list */
-    #player-list { width:100%; max-width:280px; display:flex; flex-direction:column; gap:6px; }
-    .player-item { display:flex; align-items:center; gap:10px; background:#111827;
-      border-radius:8px; padding:8px 12px; font-size:13px; }
-    .player-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
-    .player-host { font-size:10px; color:#4a5568; margin-left:auto; }
-
-    /* HUD */
-    #hud { position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between;
-      padding:12px 16px; pointer-events:none; }
-    .hud-block { display:flex; flex-direction:column; align-items:center; }
-    .hud-label { font-size:9px; letter-spacing:2px; color:#2d3748; text-transform:uppercase; }
-    .hud-val { font-size:20px; color:#e2e8f0; line-height:1; }
-
-    /* Countdown */
-    #countdown-num { font-size:90px; color:#6366f1; text-shadow:0 0 50px #6366f1;
-      animation:pop 0.4s ease-out; }
-    @keyframes pop { 0%{transform:scale(2);opacity:0} 100%{transform:scale(1);opacity:1} }
-
-    /* Results */
-    .winner-name { font-size:22px; color:#f6e05e; letter-spacing:2px; }
-    .score-row { display:flex; align-items:center; gap:10px; font-size:13px; width:100%; max-width:280px; }
-    .score-row-inner { display:flex; flex-direction:column; gap:5px; width:100%; max-width:280px; }
-    .score-rank { color:#4a5568; font-size:11px; width:16px; }
-    .score-name { flex:1; }
-    .score-pts { color:#a5b4fc; font-family:monospace; }
-
-    /* Tap hint */
-    #tap-hint { position:absolute; top:60px; left:50%; transform:translateX(-50%);
-      font-size:11px; color:#2d3748; letter-spacing:2px; pointer-events:none;
-      animation:blink 2s ease-in-out infinite; white-space:nowrap; }
-    @keyframes blink { 0%,100%{opacity:.2} 50%{opacity:.8} }
-
-    /* Dead banner */
-    #dead-banner { position:absolute; top:42%; left:50%; transform:translate(-50%,-50%);
-      font-size:16px; color:#f87171; letter-spacing:3px;
-      background:rgba(0,0,0,0.75); padding:10px 22px; border-radius:8px;
-      border:1px solid #f8717144; display:none; pointer-events:none; }
-
-    /* Toast */
-    #toast { position:absolute; bottom:100px; left:50%; transform:translateX(-50%);
-      background:#dc2626; color:white; padding:8px 20px; border-radius:8px;
-      font-size:12px; letter-spacing:1px; opacity:0; transition:opacity 0.3s;
-      pointer-events:none; white-space:nowrap; }
-    #toast.show { opacity:1; }
+    #toast{position:absolute;bottom:100px;left:50%;transform:translateX(-50%);
+      background:#dc2626;color:white;padding:8px 20px;border-radius:8px;
+      font-size:12px;letter-spacing:1px;opacity:0;transition:opacity 0.3s;
+      pointer-events:none;white-space:nowrap;}
+    #toast.show{opacity:1;}
   </style>
 </head>
 <body>
 <div id="app">
   <canvas id="gc"></canvas>
 
-  <!-- HUD -->
   <div id="hud" class="hidden">
     <div class="hud-block">
-      <span class="hud-label">alive</span>
-      <span class="hud-val" id="alive-val">-</span>
+      <div id="left-name"></div>
+      <div id="left-taps"></div>
     </div>
-    <div class="hud-block">
-      <span class="hud-label"></span>
-      <span class="hud-val" id="score-val"></span>
+    <div class="hud-block" style="align-items:center;">
+      <div class="hud-label">taps</div>
     </div>
-    <div class="hud-block">
-      <span class="hud-label"></span>
-      <span class="hud-val" id="timer-val"></span>
+    <div class="hud-block" style="align-items:flex-end;">
+      <div id="right-name"></div>
+      <div id="right-taps"></div>
     </div>
   </div>
 
-  <div id="dead-banner">YOU FELL OFF</div>
-  <div id="tap-hint" class="hidden">tap left or right to dash</div>
+  <div id="tap-hint" class="hidden">tap anywhere — tap faster to win!</div>
   <div id="toast"></div>
 
   <!-- Home -->
   <div id="screen-home" class="screen">
-    <div class="game-title">SUMO<br>PUSH</div>
-    <div class="game-sub">knock everyone off · last one standing</div>
+    <div class="game-title">🏆<br>SUMO<br>PUSH</div>
+    <div class="game-sub">tap faster than your opponent<br>push them out of the ring</div>
     <div style="height:8px;"></div>
     <div class="label">your name</div>
-    <input id="input-name" type="text" maxlength="12" placeholder="enter name" autocomplete="off" />
+    <input id="input-name" type="text" maxlength="12" placeholder="enter name" autocomplete="off"/>
     <button class="btn btn-primary" onclick="goCreate()">create room</button>
     <button class="btn btn-secondary" onclick="goJoin()">join room</button>
   </div>
@@ -130,7 +106,7 @@
     <div class="game-title" style="font-size:22px;">join game</div>
     <div class="label">room code</div>
     <input id="input-code" type="text" maxlength="5" placeholder="XXXXX"
-      autocomplete="off" style="text-transform:uppercase;font-size:22px;letter-spacing:6px;" />
+      autocomplete="off" style="text-transform:uppercase;font-size:22px;letter-spacing:6px;"/>
     <button class="btn btn-primary" onclick="joinRoom()">join</button>
     <button class="btn btn-secondary" onclick="showScreen('screen-home')">back</button>
   </div>
@@ -139,11 +115,11 @@
   <div id="screen-lobby" class="screen hidden">
     <div class="game-title" style="font-size:22px;">lobby</div>
     <div class="room-code-box">
-      <div class="label">room code — share with friends</div>
+      <div class="label">room code — share with 1 friend</div>
       <div class="room-code" id="lobby-code">-----</div>
     </div>
     <div id="player-list"></div>
-    <button class="btn btn-start" id="btn-start" onclick="startGame()" style="display:none;">start game</button>
+    <button class="btn btn-start" id="btn-start" onclick="startGame()" style="display:none;">start match!</button>
     <div class="game-sub" id="waiting-msg">waiting for host to start...</div>
     <button class="btn btn-secondary" onclick="leaveRoom()">leave</button>
   </div>
@@ -151,25 +127,20 @@
   <!-- Countdown -->
   <div id="screen-countdown" class="screen hidden" style="pointer-events:none;">
     <div id="countdown-num">3</div>
-    <div style="font-size:13px;color:#4a5568;letter-spacing:3px;margin-top:8px;">GET READY</div>
+    <div style="font-size:14px;color:#4a5568;letter-spacing:3px;margin-top:8px;">TAP TO WIN</div>
   </div>
 
   <!-- Results -->
   <div id="screen-results" class="screen hidden">
-    <div class="game-sub">round over</div>
+    <div class="game-sub">🏆 winner</div>
     <div class="winner-name" id="winner-name">---</div>
-    <div class="game-sub">wins the round!</div>
     <div class="score-row-inner" id="results-scores"></div>
-    <div class="game-sub" style="margin-top:8px;color:#2d3748;">returning to lobby...</div>
+    <div class="game-sub" style="margin-top:12px;color:#2d3748;">returning to lobby...</div>
   </div>
 </div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="game.js"></script>
-<script>
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(()=>{});
-  }
-</script>
+<script>if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});</script>
 </body>
 </html>
