@@ -5,114 +5,134 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
+app.use((req, res, next) => { res.setHeader('ngrok-skip-browser-warning', 'true'); next(); });
+
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET','POST'] },
+});
 
 // ─── Constants ────────────────────────────────────────────────
 const W = 480, H = 640;
-const FLOOR_Y = H - 60;
-const PLAYER_SPEED = 7;
-const MAX_PLAYERS = 4;
-const PLAYER_COLORS = ['#f6e05e','#f97316','#ec4899','#34d399'];
-
-// ─── Rooms ────────────────────────────────────────────────────
+const PLATFORM_X = W / 2, PLATFORM_Y = H / 2 + 20;
+const PLATFORM_START_R = 195;
+const PLATFORM_MIN_R = 80;
+const SHRINK_AMOUNT = 22;
+const SHRINK_INTERVAL = 12000; // ms
+const PLAYER_RADIUS = 13;
+const DASH_FORCE = 28;
+const DASH_COOLDOWN_TICKS = 18; // ~0.6s at 30fps
+const FRICTION = 0.82;
+const MAX_PLAYERS = 6;
+const PLAYER_COLORS = ['#f6e05e','#f97316','#ec4899','#34d399','#60a5fa','#a78bfa'];
 const rooms = {};
 
-function generateRoomCode() {
-  return Math.random().toString(36).substring(2,7).toUpperCase();
+// ─── Helpers ──────────────────────────────────────────────────
+function genCode() { return Math.random().toString(36).substring(2,7).toUpperCase(); }
+
+function mkPlatform() {
+  return { x: PLATFORM_X, y: PLATFORM_Y, radius: PLATFORM_START_R };
 }
 
-function spawnAsteroid(difficulty) {
-  const radius = 14 + Math.random() * 22;
-  const offsets = Array.from({length:8}, () => Math.random());
+function mkPlayer(id, name, idx) {
+  const angle = (idx / MAX_PLAYERS) * Math.PI * 2;
+  const r = PLATFORM_START_R * 0.5;
   return {
-    id: Math.random().toString(36).slice(2),
-    x: radius + Math.random() * (W - radius*2),
-    y: -radius,
-    radius,
-    speed: (2.5 + difficulty * 0.4) * (0.8 + Math.random() * 0.6),
-    rot: Math.random() * Math.PI * 2,
-    rotSpeed: (Math.random() - 0.5) * 0.05,
-    offsets,
-  };
-}
-
-function createPlayer(id, name, colorIndex) {
-  const slot = colorIndex % MAX_PLAYERS;
-  const spacing = W / (MAX_PLAYERS + 1);
-  return {
-    id, name: name || 'Player '+(colorIndex+1),
-    color: PLAYER_COLORS[slot],
-    x: spacing * (slot + 1),
-    y: FLOOR_Y - 20,
+    id, name: name || 'Player '+(idx+1),
+    color: PLAYER_COLORS[idx % PLAYER_COLORS.length],
+    x: PLATFORM_X + Math.cos(angle) * r,
+    y: PLATFORM_Y + Math.sin(angle) * r,
+    vx: 0, vy: 0,
     alive: true,
     score: 0,
+    dashCooldown: 0,
+    rank: 0,
   };
 }
 
-function createRoom(hostId, hostName) {
-  const code = generateRoomCode();
+function mkRoom(hostId, hostName) {
+  const code = genCode();
   return {
     code, hostId,
-    players: { [hostId]: createPlayer(hostId, hostName, 0) },
-    asteroids: [],
+    players: { [hostId]: mkPlayer(hostId, hostName, 0) },
+    platform: mkPlatform(),
     state: 'waiting',
-    difficulty: 0,
-    spawnTimer: 0,
     tickInterval: null,
-    timerInterval: null,
-    roundTimer: 0,
+    shrinkInterval: null,
+    deathRank: 0,
+    totalPlayers: 1,
   };
 }
 
-// ─── Game tick ────────────────────────────────────────────────
+// ─── Physics ──────────────────────────────────────────────────
 function tickRoom(room) {
   if (room.state !== 'playing') return;
-  const players = Object.values(room.players);
-  const alive = players.filter(p => p.alive);
+  const pList = Object.values(room.players);
+  const alive = pList.filter(p => p.alive);
+  const bumps = [];
 
-  // Spawn asteroids
-  room.spawnTimer--;
-  if (room.spawnTimer <= 0) {
-    room.asteroids.push(spawnAsteroid(room.difficulty));
-    // Spawn interval shrinks as difficulty grows
-    room.spawnTimer = Math.max(8, 28 - Math.floor(room.difficulty * 2));
-  }
+  for (const p of pList) {
+    if (!p.alive) continue;
 
-  // Move asteroids
-  for (const a of room.asteroids) {
-    a.y += a.speed;
-    a.rot += a.rotSpeed;
-  }
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= FRICTION;
+    p.vy *= FRICTION;
+    if (p.dashCooldown > 0) p.dashCooldown--;
 
-  // Collision — asteroid vs player
-  for (const a of room.asteroids) {
-    for (const p of players) {
-      if (!p.alive) continue;
-      const dx = p.x - a.x, dy = p.y - a.y;
+    // Player vs Player collision
+    for (const other of pList) {
+      if (other.id === p.id || !other.alive) continue;
+      const dx = other.x - p.x, dy = other.y - p.y;
       const dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist < a.radius + 10) {
-        p.alive = false;
+      const minDist = PLAYER_RADIUS * 2;
+      if (dist < minDist && dist > 0) {
+        const nx = dx/dist, ny = dy/dist;
+        const overlap = minDist - dist;
+        p.x -= nx * overlap * 0.5;
+        p.y -= ny * overlap * 0.5;
+        other.x += nx * overlap * 0.5;
+        other.y += ny * overlap * 0.5;
+        const relVx = p.vx - other.vx, relVy = p.vy - other.vy;
+        const dot = relVx*nx + relVy*ny;
+        if (dot > 0) {
+          const impulse = dot * 1.1;
+          p.vx -= impulse * nx; p.vy -= impulse * ny;
+          other.vx += impulse * nx; other.vy += impulse * ny;
+          bumps.push({ x: (p.x+other.x)/2, y: (p.y+other.y)/2, color: p.color, id: p.id });
+        }
       }
+    }
+
+    // Fall off platform
+    const pr = room.platform;
+    const dx = p.x - pr.x, dy = p.y - pr.y;
+    if (Math.sqrt(dx*dx + dy*dy) > pr.radius - PLAYER_RADIUS * 0.5) {
+      p.alive = false;
+      room.deathRank++;
+      p.rank = room.deathRank;
+      p.score = Math.max(0, alive.length - room.deathRank) * 10;
     }
   }
 
-  // Score — +1 per second survived
-  for (const p of alive) p.score++;
-
-  // Remove asteroids off screen
-  room.asteroids = room.asteroids.filter(a => a.y < H + 60);
-
-  // Ramp difficulty over time
-  room.difficulty += 0.005;
-
-  // End if everyone dead or 1 left in multiplayer
-  const stillAlive = players.filter(p => p.alive);
-  if (stillAlive.length === 0 || (players.length > 1 && stillAlive.length <= 1)) {
+  const stillAlive = pList.filter(p => p.alive);
+  if (stillAlive.length <= 1) {
+    if (stillAlive.length === 1) {
+      stillAlive[0].score = room.totalPlayers * 10 + 50;
+      stillAlive[0].rank = 0;
+    }
     endRound(room);
+    return;
   }
+
+  io.to(room.code).emit('state', {
+    players: room.players,
+    platform: room.platform,
+    bumps: bumps.length ? bumps : undefined,
+  });
 }
 
+// ─── Round lifecycle ──────────────────────────────────────────
 function startCountdown(room) {
   room.state = 'countdown';
   let count = 3;
@@ -126,78 +146,66 @@ function startCountdown(room) {
 
 function startRound(room) {
   room.state = 'playing';
-  room.asteroids = [];
-  room.difficulty = 0;
-  room.spawnTimer = 30;
-  room.roundTimer = 0;
-
-  // Reset players
+  room.platform = mkPlatform();
+  room.deathRank = 0;
   const pList = Object.values(room.players);
-  const spacing = W / (pList.length + 1);
+  room.totalPlayers = pList.length;
+  const spacing = (Math.PI * 2) / pList.length;
   pList.forEach((p, i) => {
-    p.x = spacing * (i + 1);
-    p.y = FLOOR_Y - 20;
-    p.alive = true;
-    p.score = 0;
+    const angle = spacing * i - Math.PI / 2;
+    const r = PLATFORM_START_R * 0.45;
+    p.x = PLATFORM_X + Math.cos(angle) * r;
+    p.y = PLATFORM_Y + Math.sin(angle) * r;
+    p.vx = 0; p.vy = 0; p.alive = true;
+    p.score = 0; p.dashCooldown = 0; p.rank = 0;
   });
 
-  io.to(room.code).emit('round_start', {
-    players: room.players,
-    asteroids: room.asteroids,
-  });
+  io.to(room.code).emit('round_start', { players: room.players, platform: room.platform });
 
-  room.tickInterval = setInterval(() => {
-    tickRoom(room);
-    room.roundTimer++;
-    io.to(room.code).emit('state', {
-      players: room.players,
-      asteroids: room.asteroids,
-      timer: Math.floor(room.roundTimer / 30), // seconds survived
-    });
-  }, 1000 / 30);
+  room.tickInterval = setInterval(() => tickRoom(room), 1000 / 30);
+  room.shrinkInterval = setInterval(() => {
+    if (room.state !== 'playing') return;
+    room.platform.radius = Math.max(PLATFORM_MIN_R, room.platform.radius - SHRINK_AMOUNT);
+    io.to(room.code).emit('platform_shrink', { platform: room.platform });
+    if (room.platform.radius <= PLATFORM_MIN_R) clearInterval(room.shrinkInterval);
+  }, SHRINK_INTERVAL);
 }
 
 function endRound(room) {
   clearInterval(room.tickInterval);
-  clearInterval(room.timerInterval);
+  clearInterval(room.shrinkInterval);
   room.state = 'results';
-
-  const players = Object.values(room.players);
-  const sorted = [...players].sort((a,b) => b.score - a.score);
-  const winner = sorted[0];
-
+  const sorted = Object.values(room.players).sort((a,b) => b.score - a.score);
+  const winner = sorted[0]?.score > 0 ? sorted[0] : null;
   io.to(room.code).emit('round_end', {
     winner: winner ? { name: winner.name, color: winner.color } : null,
     scores: sorted.map(p => ({ name: p.name, color: p.color, score: p.score, alive: p.alive })),
   });
-
   setTimeout(() => {
     room.state = 'waiting';
-    room.asteroids = [];
     io.to(room.code).emit('back_to_lobby', {});
   }, 5000);
 }
 
 // ─── Socket events ────────────────────────────────────────────
 io.on('connection', socket => {
-  console.log('Connected:', socket.id);
+  console.log('+ connected:', socket.id);
 
   socket.on('create_room', ({ name }) => {
-    const room = createRoom(socket.id, name);
+    const room = mkRoom(socket.id, name);
     rooms[room.code] = room;
     socket.join(room.code);
     socket.roomCode = room.code;
     socket.emit('room_created', { code: room.code, players: room.players, you: socket.id });
-    console.log('Room created:', room.code);
   });
 
   socket.on('join_room', ({ code, name }) => {
     const room = rooms[code.toUpperCase()];
-    if (!room) { socket.emit('error', { msg: 'Room not found' }); return; }
-    if (Object.keys(room.players).length >= MAX_PLAYERS) { socket.emit('error', { msg: 'Room full' }); return; }
-    if (room.state !== 'waiting') { socket.emit('error', { msg: 'Game in progress' }); return; }
+    if (!room)                                         { socket.emit('error', { msg: 'Room not found' }); return; }
+    if (Object.keys(room.players).length >= MAX_PLAYERS) { socket.emit('error', { msg: 'Room is full (max 6)' }); return; }
+    if (room.state !== 'waiting')                      { socket.emit('error', { msg: 'Game already started' }); return; }
     const idx = Object.keys(room.players).length;
-    room.players[socket.id] = createPlayer(socket.id, name, idx);
+    room.players[socket.id] = mkPlayer(socket.id, name, idx);
     socket.join(code.toUpperCase());
     socket.roomCode = code.toUpperCase();
     socket.emit('room_joined', { code: room.code, players: room.players, you: socket.id });
@@ -210,14 +218,13 @@ io.on('connection', socket => {
     startCountdown(room);
   });
 
-  // Player moves left or right
-  socket.on('move', ({ dir }) => {
+  socket.on('dash', ({ dir }) => {
     const room = rooms[socket.roomCode];
     if (!room || room.state !== 'playing') return;
     const p = room.players[socket.id];
-    if (!p || !p.alive) return;
-    if (dir === 'left')  p.x = Math.max(16, p.x - PLAYER_SPEED);
-    if (dir === 'right') p.x = Math.min(W-16, p.x + PLAYER_SPEED);
+    if (!p || !p.alive || p.dashCooldown > 0) return;
+    p.vx += dir * DASH_FORCE;
+    p.dashCooldown = DASH_COOLDOWN_TICKS;
   });
 
   socket.on('disconnect', () => {
@@ -227,8 +234,8 @@ io.on('connection', socket => {
     io.to(room.code).emit('player_left', { players: room.players });
     if (Object.keys(room.players).length === 0) {
       clearInterval(room.tickInterval);
+      clearInterval(room.shrinkInterval);
       delete rooms[socket.roomCode];
-      console.log('Room deleted:', socket.roomCode);
     }
   });
 });
