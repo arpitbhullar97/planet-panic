@@ -1,30 +1,40 @@
 // ─── Config ───────────────────────────────────────────────────
 const SERVER_URL = 'https://planet-panic-production.up.railway.app';
+const MAP_W = 800, MAP_H = 800;
+
+// ─── Hero data (client copy for UI) ──────────────────────────
+const HEROES = {
+  blaze: {name:'Blaze', icon:'🔥', color:'#ef4444', abilityName:'Burst Fire', desc:'Fires 5 bullets in a spread'},
+  vault: {name:'Vault', icon:'🛡️', color:'#3b82f6', abilityName:'Charge',     desc:'Charges forward knocking enemies'},
+  pulse: {name:'Pulse', icon:'💚', color:'#34d399', abilityName:'Heal Burst', desc:'Heals all nearby teammates'},
+  shade: {name:'Shade', icon:'👻', color:'#a78bfa', abilityName:'Blink',      desc:'Teleports to target location'},
+  vex:   {name:'Vex',   icon:'🎯', color:'#fbbf24', abilityName:'Pierce',     desc:'Fires a bullet through walls'},
+  kova:  {name:'Kova',  icon:'💣', color:'#f97316', abilityName:'Mine',       desc:'Places a hidden mine'},
+};
 
 // ─── State ────────────────────────────────────────────────────
-let socket=null, myId=null, roomCode=null, isHost=false;
+let socket=null, myId=null, myTeam=null, myHeroKey='blaze', roomCode=null, isHost=false;
 let gameState='home';
-let players={};
-let ropePos=0.5;       // 0=left wins, 1=right wins, 0.5=center
-let leftId=null, rightId=null;
-let particles=[], stars=[], animId, lastTime=0;
-let shakeX=0, shakeTimer=0;
-let roundWinner=null;
-let ropePulse=0;
-let groundY=0;
-let leftTaps=0, rightTaps=0; // visual feedback only
+let players={}, bullets=[], mines=[], walls=[];
+let particles=[], effects=[];
+let stars=[];
+let animId, lastTime=0;
+let camX=0, camY=0;
 
-const W=480, H=640;
+// Joystick state
+let moveJoy={active:false,startX:0,startY:0,curX:0,curY:0,id:-1};
+let aimJoy={active:false,startX:0,startY:0,curX:0,curY:0,id:-1,isAbility:false};
+let lastFireTime=0;
+const FIRE_INTERVAL=120; // ms between auto-fire
+
+// Canvas
 const canvas=document.getElementById('gc');
 const ctx=canvas.getContext('2d');
+let CW,CH;
 
 function resizeCanvas(){
-  const maxW=Math.min(window.innerWidth,W);
-  const maxH=Math.min(window.innerHeight,H);
-  let w=maxW, h=maxW*(H/W);
-  if(h>maxH){h=maxH;w=h*(W/H);}
-  canvas.width=W; canvas.height=H;
-  canvas.style.width=w+'px'; canvas.style.height=h+'px';
+  CW=canvas.width=window.innerWidth;
+  CH=canvas.height=window.innerHeight;
 }
 resizeCanvas();
 window.addEventListener('resize',resizeCanvas);
@@ -32,10 +42,9 @@ window.addEventListener('resize',resizeCanvas);
 // ─── Stars ────────────────────────────────────────────────────
 function mkStars(){
   stars=[];
-  for(let i=0;i<80;i++) stars.push({
-    x:Math.random()*W, y:Math.random()*H*0.5,
-    r:Math.random()*1.3+0.2, a:Math.random()*0.5+0.1,
-    tw:Math.random()*Math.PI*2, spd:Math.random()*0.02+0.005
+  for(let i=0;i<60;i++) stars.push({
+    x:Math.random()*MAP_W, y:Math.random()*MAP_H,
+    r:Math.random()*1.2+0.2, a:Math.random()*0.3+0.05
   });
 }
 mkStars();
@@ -44,17 +53,23 @@ mkStars();
 function hideAllScreens(){
   document.querySelectorAll('.screen').forEach(s=>s.classList.add('hidden'));
   document.getElementById('hud').classList.add('hidden');
-  document.getElementById('tap-hint').classList.add('hidden');
+  document.getElementById('round-banner').style.display='none';
+  document.getElementById('respawn-banner').style.display='none';
 }
 function showScreen(id){
   hideAllScreens();
   if(id) document.getElementById(id).classList.remove('hidden');
 }
-function showHUD(show){ document.getElementById('hud').classList.toggle('hidden',!show); }
+function showHUD(v){ document.getElementById('hud').classList.toggle('hidden',!v); }
 function showToast(msg){
   const t=document.getElementById('toast');
   t.textContent=msg; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),2500);
+}
+function showBanner(msg,color,duration){
+  const b=document.getElementById('round-banner');
+  b.innerHTML=msg; b.style.color=color; b.style.display='block';
+  setTimeout(()=>b.style.display='none',duration||2000);
 }
 function setupLobbyScreen(){
   showScreen('screen-lobby');
@@ -67,27 +82,38 @@ function updatePlayerList(){
   const list=document.getElementById('player-list');
   list.innerHTML='';
   Object.values(players).forEach((p,i)=>{
+    const h=HEROES[p.heroKey]||HEROES.blaze;
     const div=document.createElement('div');
     div.className='player-item';
-    div.innerHTML=`<div class="player-dot" style="background:${p.color}"></div>
-      <span>${p.name}</span>${i===0?'<span class="player-host">host</span>':''}`;
+    const teamColor=p.team==='red'?'#ef4444':'#3b82f6';
+    div.innerHTML=`<div class="player-dot" style="background:${h.color}"></div>
+      <span>${h.icon} ${p.name}</span>
+      <span class="team-badge" style="background:${teamColor}22;color:${teamColor};">${p.team}</span>
+      ${i===0?'<span class="player-host">host</span>':''}`;
     list.appendChild(div);
   });
 }
 
+// ─── Hero picker ──────────────────────────────────────────────
+function selectHero(el){
+  document.querySelectorAll('.hero-card').forEach(c=>c.classList.remove('selected'));
+  el.classList.add('selected');
+  myHeroKey=el.dataset.hero;
+}
+
 // ─── UI actions ───────────────────────────────────────────────
 function getName(){ return document.getElementById('input-name').value.trim()||'Player'; }
-function goCreate(){ connectSocket(); socket.emit('create_room',{name:getName()}); }
+function goCreate(){ connectSocket(); socket.emit('create_room',{name:getName(),heroKey:myHeroKey}); }
 function goJoin(){ connectSocket(); showScreen('screen-join'); }
 function joinRoom(){
   const code=document.getElementById('input-code').value.trim().toUpperCase();
   if(code.length<5){showToast('Enter full room code');return;}
-  socket.emit('join_room',{code,name:getName()});
+  socket.emit('join_room',{code,name:getName(),heroKey:myHeroKey});
 }
 function startGame(){ socket.emit('start_game'); }
 function leaveRoom(){
   if(socket) socket.disconnect();
-  socket=null; myId=null; roomCode=null; isHost=false; players={};
+  socket=null; myId=null; myTeam=null; players={}; bullets=[]; mines=[];
   showScreen('screen-home'); gameState='home';
 }
 
@@ -102,12 +128,12 @@ function bindSocketEvents(){
   socket.on('connect',()=>{ myId=socket.id; });
 
   socket.on('room_created',(data)=>{
-    roomCode=data.code; myId=data.you; isHost=true;
+    roomCode=data.code; myId=data.you; myTeam=data.team; isHost=true;
     players=data.players; gameState='lobby';
     setupLobbyScreen(); startRenderLoop();
   });
   socket.on('room_joined',(data)=>{
-    roomCode=data.code; myId=data.you; isHost=false;
+    roomCode=data.code; myId=data.you; myTeam=data.team; isHost=false;
     players=data.players; gameState='lobby';
     setupLobbyScreen(); startRenderLoop();
   });
@@ -124,61 +150,67 @@ function bindSocketEvents(){
   });
 
   socket.on('round_start',(data)=>{
-    players=data.players;
-    leftId=data.leftId; rightId=data.rightId;
-    ropePos=0.5; leftTaps=0; rightTaps=0;
-    roundWinner=null; particles=[];
+    players=data.players; walls=data.walls||[];
+    bullets=[]; mines=[]; particles=[];
     gameState='playing';
     hideAllScreens(); showHUD(true);
-    document.getElementById('tap-hint').classList.remove('hidden');
-    // Update player name labels
-    const lp=players[leftId], rp=players[rightId];
-    document.getElementById('left-name').textContent=lp?lp.name:'';
-    document.getElementById('right-name').textContent=rp?rp.name:'';
-    document.getElementById('left-taps').textContent='';
-    document.getElementById('right-taps').textContent='';
+    updateHUD();
   });
 
   socket.on('state',(data)=>{
     if(gameState!=='playing') return;
-    const prev=ropePos;
-    ropePos=data.ropePos;
-    // Pulse rope on movement
-    if(Math.abs(ropePos-prev)>0.003) ropePulse=1;
-    // Shake when near edge
-    if(ropePos<0.1||ropePos>0.9) triggerShake(3,6);
-    document.getElementById('left-taps').textContent=data.leftTaps||'';
-    document.getElementById('right-taps').textContent=data.rightTaps||'';
+    players=data.players; bullets=data.bullets||[]; mines=data.mines||[];
+    // Spawn client-side particles for effects
+    for(const e of (data.effects||[])){
+      if(e.type==='hit') spawnHitSpark(e.x,e.y,e.color);
+      else if(e.type==='death') spawnExplosion(e.x,e.y,e.color);
+      else if(e.type==='explosion') spawnExplosion(e.x,e.y,e.color);
+      else if(e.type==='heal') spawnHeal(e.x,e.y);
+    }
+    // Update HUD
+    document.getElementById('red-score').textContent=data.scores?.red||0;
+    document.getElementById('blue-score').textContent=data.scores?.blue||0;
+    updateHUD();
   });
 
-  socket.on('tap_effect',(data)=>{
-    // Visual tap burst
-    const isLeft=data.side==='left';
-    const x=isLeft?120:360, y=groundY-80;
-    spawnTapBurst(x,y,data.color);
-    if(data.side==='left') leftTaps++;
-    else rightTaps++;
-    if(data.id===myId) triggerShake(2,4);
+  socket.on('respawn',(data)=>{
+    if(data.id===myId){
+      document.getElementById('respawn-banner').style.display='none';
+    }
+  });
+
+  socket.on('effects',(efx)=>{
+    for(const e of efx){
+      if(e.type==='heal') spawnHeal(e.x,e.y);
+    }
   });
 
   socket.on('round_end',(data)=>{
-    gameState='results'; roundWinner=data.winner;
-    // Big explosion at loser side
-    const loserX=data.winner.side==='left'?360:120;
-    spawnExplosion(loserX,groundY-80,data.loserColor);
-    triggerShake(14,30);
-    setTimeout(()=>{
-      hideAllScreens();
-      document.getElementById('screen-results').classList.remove('hidden');
-      document.getElementById('winner-name').textContent=data.winner.name.toUpperCase();
-      document.getElementById('winner-name').style.color=data.winner.color;
-      const el=document.getElementById('results-scores');
-      el.innerHTML=`<div class="score-row">
-        <span class="player-dot" style="background:${data.winner.color};display:inline-block;border-radius:50%;flex-shrink:0;"></span>
-        <span class="score-name">${data.winner.name}</span>
-        <span class="score-pts">👑 winner</span>
-      </div>`;
-    },1200);
+    gameState='roundEnd';
+    const color=data.winTeam==='red'?'#ef4444':'#3b82f6';
+    showBanner(`${data.winTeam.toUpperCase()} TEAM WINS THE ROUND!<br>
+      <span style="font-size:12px;color:#718096;">Red ${data.scores.red} — ${data.scores.blue} Blue</span>`,
+      color, 3000);
+  });
+
+  socket.on('match_end',(data)=>{
+    gameState='matchEnd'; hideAllScreens();
+    const color=data.winTeam==='red'?'#ef4444':'#3b82f6';
+    document.getElementById('screen-match-end').classList.remove('hidden');
+    document.getElementById('match-win-title').textContent=`${data.winTeam.toUpperCase()} WINS THE MATCH!`;
+    document.getElementById('match-win-title').style.color=color;
+    const list=document.getElementById('match-results-list');
+    list.innerHTML='';
+    Object.values(players).sort((a,b)=>b.score-a.score).forEach(p=>{
+      const h=HEROES[p.heroKey]||HEROES.blaze;
+      const row=document.createElement('div');
+      row.className='score-row';
+      row.innerHTML=`<span style="font-size:14px;">${h.icon}</span>
+        <span style="color:${h.color};">${p.name}</span>
+        <span style="color:#4a5568;font-size:10px;">${p.team}</span>
+        <span style="margin-left:auto;color:#a5b4fc;">${p.score} kills</span>`;
+      list.appendChild(row);
+    });
   });
 
   socket.on('back_to_lobby',()=>{ gameState='lobby'; setupLobbyScreen(); });
@@ -189,291 +221,392 @@ function bindSocketEvents(){
   });
 }
 
-// ─── Input — tap to push ──────────────────────────────────────
-function doTap(){
-  if(gameState!=='playing') return;
-  socket.emit('tap');
+// ─── HUD update ───────────────────────────────────────────────
+function updateHUD(){
+  const me=players[myId]; if(!me) return;
+  const h=HEROES[me.heroKey]||HEROES.blaze;
+  const hpPct=Math.max(0,(me.hp/me.maxHp)*100);
+  document.getElementById('hp-fill').style.width=hpPct+'%';
+  document.getElementById('hp-fill').style.background=hpPct>50?'#34d399':hpPct>25?'#fbbf24':'#ef4444';
+  document.getElementById('hero-name-hud').textContent=h.name.toUpperCase();
+  document.getElementById('kills-hud').textContent=me.score+' kills';
+  document.getElementById('ability-name-hud').textContent=h.abilityName;
+  const cd=me.abilityCooldown||0;
+  const cdMax=me.abilityCooldownMax||1;
+  document.getElementById('ability-cd-hud').textContent=cd>0?Math.ceil(cd/30)+'s':'READY';
+  document.getElementById('ability-cd-hud').style.color=cd>0?'#ef4444':'#34d399';
+  if(!me.alive){
+    document.getElementById('respawn-banner').style.display='block';
+  }
 }
 
-// Tap anywhere on YOUR half of the screen
+// ─── Camera ───────────────────────────────────────────────────
+function updateCamera(){
+  const me=players[myId];
+  if(me){
+    const targetX=me.x-CW/2;
+    const targetY=me.y-CH/2;
+    camX+=(targetX-camX)*0.12;
+    camY+=(targetY-camY)*0.12;
+  }
+  camX=Math.max(0,Math.min(MAP_W-CW,camX));
+  camY=Math.max(0,Math.min(MAP_H-CH,camY));
+}
+
+// ─── Touch input ──────────────────────────────────────────────
 canvas.addEventListener('touchstart',e=>{
   e.preventDefault();
-  doTap();
+  for(const t of e.changedTouches){
+    const tx=t.clientX, ty=t.clientY;
+    if(tx<CW/2){
+      // Left side = move joystick
+      moveJoy={active:true,startX:tx,startY:ty,curX:tx,curY:ty,id:t.identifier};
+    } else {
+      // Right side = aim/fire joystick
+      aimJoy={active:true,startX:tx,startY:ty,curX:tx,curY:ty,id:t.identifier,isAbility:false};
+    }
+  }
 },{passive:false});
 
-canvas.addEventListener('click',()=>{ doTap(); });
-window.addEventListener('keydown',e=>{
-  if(e.key===' '||e.key==='ArrowLeft'||e.key==='ArrowRight'||
-     e.key==='a'||e.key==='d') doTap();
-});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches){
+    if(t.identifier===moveJoy.id){
+      moveJoy.curX=t.clientX; moveJoy.curY=t.clientY;
+      // Send movement to server
+      const dx=moveJoy.curX-moveJoy.startX;
+      const dy=moveJoy.curY-moveJoy.startY;
+      const len=Math.sqrt(dx*dx+dy*dy)||1;
+      const deadzone=10;
+      if(len>deadzone){
+        socket?.emit('move',{vx:dx/Math.max(len,60),vy:dy/Math.max(len,60)});
+      } else {
+        socket?.emit('move',{vx:0,vy:0});
+      }
+    }
+    if(t.identifier===aimJoy.id){
+      aimJoy.curX=t.clientX; aimJoy.curY=t.clientY;
+      // Auto fire while dragging right joystick
+      const now=Date.now();
+      if(gameState==='playing'&&now-lastFireTime>FIRE_INTERVAL){
+        fireAtJoyTarget(false);
+        lastFireTime=now;
+      }
+    }
+  }
+},{passive:false});
 
-// ─── Effects ──────────────────────────────────────────────────
-function triggerShake(intensity,frames){
-  shakeX=intensity; shakeTimer=frames;
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches){
+    if(t.identifier===moveJoy.id){
+      moveJoy.active=false;
+      socket?.emit('move',{vx:0,vy:0});
+    }
+    if(t.identifier===aimJoy.id){
+      // Quick tap on right = ability
+      const dx=aimJoy.curX-aimJoy.startX, dy=aimJoy.curY-aimJoy.startY;
+      const moved=Math.sqrt(dx*dx+dy*dy);
+      if(moved<15){
+        // Tap = ability toward nearest enemy
+        fireAbility();
+      }
+      aimJoy.active=false;
+    }
+  }
+},{passive:false});
+
+// Keyboard fallback
+const keys={};
+window.addEventListener('keydown',e=>{ keys[e.key]=true; sendKeyMove(); });
+window.addEventListener('keyup',e=>{ keys[e.key]=false; sendKeyMove(); });
+function sendKeyMove(){
+  if(gameState!=='playing') return;
+  let vx=0,vy=0;
+  if(keys['ArrowLeft']||keys['a']) vx-=1;
+  if(keys['ArrowRight']||keys['d']) vx+=1;
+  if(keys['ArrowUp']||keys['w']) vy-=1;
+  if(keys['ArrowDown']||keys['s']) vy+=1;
+  const len=Math.sqrt(vx*vx+vy*vy)||1;
+  if(vx||vy) socket?.emit('move',{vx:vx/len,vy:vy/len});
+  else socket?.emit('move',{vx:0,vy:0});
 }
-function spawnTapBurst(x,y,color){
-  for(let i=0;i<8;i++){
-    const a=Math.random()*Math.PI*2, spd=1+Math.random()*4;
-    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-2,
-      life:0.7,color,r:2+Math.random()*3});
+window.addEventListener('keydown',e=>{
+  if(e.key===' ') { e.preventDefault(); fireAbility(); }
+  if(e.key==='f'||e.key==='F') fireAtMouse();
+});
+let mouseX=CW/2, mouseY=CH/2;
+canvas.addEventListener('mousemove',e=>{ mouseX=e.clientX; mouseY=e.clientY; });
+canvas.addEventListener('mousedown',e=>{
+  if(e.button===0) fireAtMouse();
+  if(e.button===2){ e.preventDefault(); fireAbility(); }
+});
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+function fireAtMouse(){
+  if(gameState!=='playing') return;
+  const me=players[myId]; if(!me||!me.alive) return;
+  const wx=mouseX+camX, wy=mouseY+camY;
+  socket?.emit('fire',{targetX:wx,targetY:wy});
+}
+
+function fireAtJoyTarget(isAbility){
+  const me=players[myId]; if(!me||!me.alive) return;
+  const dx=aimJoy.curX-aimJoy.startX, dy=aimJoy.curY-aimJoy.startY;
+  const len=Math.sqrt(dx*dx+dy*dy)||1;
+  // Project aim direction from player world position
+  const wx=me.x+dx/len*200, wy=me.y+dy/len*200;
+  if(isAbility) socket?.emit('ability',{targetX:wx,targetY:wy});
+  else socket?.emit('fire',{targetX:wx,targetY:wy});
+}
+
+function fireAbility(){
+  if(gameState!=='playing') return;
+  const me=players[myId]; if(!me||!me.alive) return;
+  // Aim toward nearest enemy
+  let nearest=null, nd=Infinity;
+  for(const p of Object.values(players)){
+    if(p.team===myTeam||!p.alive) continue;
+    const d=(p.x-me.x)**2+(p.y-me.y)**2;
+    if(d<nd){nd=d;nearest=p;}
+  }
+  const tx=nearest?nearest.x:me.x+100;
+  const ty=nearest?nearest.y:me.y;
+  socket?.emit('ability',{targetX:tx,targetY:ty});
+}
+
+// ─── Particles ────────────────────────────────────────────────
+function spawnHitSpark(x,y,color){
+  for(let i=0;i<6;i++){
+    const a=Math.random()*Math.PI*2, s=2+Math.random()*4;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.6,color,r:2+Math.random()*2});
   }
 }
 function spawnExplosion(x,y,color){
-  for(let i=0;i<30;i++){
-    const a=(i/30)*Math.PI*2, spd=2+Math.random()*8;
-    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,
-      life:1,color,r:3+Math.random()*5});
+  for(let i=0;i<20;i++){
+    const a=(i/20)*Math.PI*2+Math.random()*.3, s=2+Math.random()*6;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,color,r:3+Math.random()*4});
   }
-  particles.push({x,y,vx:0,vy:0,life:0.4,color:'#ffffff',r:30});
+  particles.push({x,y,vx:0,vy:0,life:0.3,color:'#ffffff',r:20});
+}
+function spawnHeal(x,y){
+  for(let i=0;i<12;i++){
+    const a=Math.random()*Math.PI*2, s=1+Math.random()*3;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-2,life:0.8,color:'#34d399',r:2+Math.random()*3});
+  }
 }
 
 // ─── Draw ─────────────────────────────────────────────────────
-function drawSumo(x,y,color,facing,squish,isMe){
-  // squish = 0 normal, 1 = squished (during push)
-  const sx=1+squish*0.3, sy=1-squish*0.15;
-  ctx.save();
-  ctx.translate(x,y);
-  ctx.scale(sx,sy);
-
-  // Shadow
-  ctx.beginPath();
-  ctx.ellipse(0,2,26,8,0,0,Math.PI*2);
-  ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fill();
-
-  // Body — big round sumo
-  const bodyGrd=ctx.createRadialGradient(-8,-10,2,0,0,34);
-  bodyGrd.addColorStop(0,lighten(color,60));
-  bodyGrd.addColorStop(1,color);
-  ctx.beginPath(); ctx.arc(0,0,32,0,Math.PI*2);
-  ctx.fillStyle=bodyGrd; ctx.fill();
-
-  // Belt (mawashi)
-  ctx.beginPath();
-  ctx.ellipse(0,8,22,10,0,0,Math.PI*2);
-  ctx.fillStyle=darken(color,60); ctx.fill();
-  // Belt knot
-  ctx.beginPath(); ctx.arc(facing>0?10:-10,8,6,0,Math.PI*2);
-  ctx.fillStyle=darken(color,80); ctx.fill();
-
-  // Face
-  const fx=facing*8;
-  // Eyes
-  ctx.beginPath(); ctx.arc(fx-6,-8,5,0,Math.PI*2);
-  ctx.fillStyle='#fff'; ctx.fill();
-  ctx.beginPath(); ctx.arc(fx+6,-8,5,0,Math.PI*2);
-  ctx.fillStyle='#fff'; ctx.fill();
-  ctx.beginPath(); ctx.arc(fx-6+facing*2,-8,2.5,0,Math.PI*2);
-  ctx.fillStyle='#1a1a2e'; ctx.fill();
-  ctx.beginPath(); ctx.arc(fx+6+facing*2,-8,2.5,0,Math.PI*2);
-  ctx.fillStyle='#1a1a2e'; ctx.fill();
-
-  // Determined eyebrows
-  ctx.strokeStyle='#1a1a2e'; ctx.lineWidth=2.5; ctx.lineCap='round';
-  ctx.beginPath();
-  ctx.moveTo(fx-10,-14); ctx.lineTo(fx-3,-12); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(fx+3,-12); ctx.lineTo(fx+10,-14); ctx.stroke();
-
-  // Mouth
-  ctx.beginPath();
-  ctx.arc(fx,0,6,0.2,Math.PI-0.2);
-  ctx.strokeStyle='#1a1a2e'; ctx.lineWidth=2; ctx.stroke();
-
-  // Arms stretched forward
-  ctx.strokeStyle=color; ctx.lineWidth=12; ctx.lineCap='round';
-  ctx.beginPath();
-  ctx.moveTo(facing*20,-5);
-  ctx.lineTo(facing*38,4);
-  ctx.stroke();
-  // Fist
-  ctx.beginPath(); ctx.arc(facing*40,4,7,0,Math.PI*2);
-  ctx.fillStyle=lighten(color,40); ctx.fill();
-
-  // Topknot
-  ctx.beginPath();
-  ctx.ellipse(0,-34,5,8,0,0,Math.PI*2);
-  ctx.fillStyle='#1a1a2e'; ctx.fill();
-  ctx.beginPath(); ctx.arc(0,-36,3,0,Math.PI*2);
-  ctx.fillStyle='#333'; ctx.fill();
-
-  // Self ring
-  if(isMe){
-    ctx.beginPath(); ctx.arc(0,0,36,0,Math.PI*2);
-    ctx.strokeStyle=color+'88'; ctx.lineWidth=2; ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
 function draw(ts){
   const dt=Math.min((ts-lastTime)/16.67,2.5);
   lastTime=ts;
 
-  let sx=0,sy=0;
-  if(shakeTimer>0){
-    sx=(Math.random()-0.5)*shakeX;
-    sy=(Math.random()-0.5)*shakeX*0.5;
-    shakeTimer-=dt; shakeX*=0.85;
+  if(gameState==='playing'||gameState==='roundEnd'||gameState==='matchEnd'){
+    updateCamera();
   }
 
-  ctx.clearRect(0,0,W,H);
+  ctx.clearRect(0,0,CW,CH);
+
+  // ── Background ──
+  ctx.fillStyle='#0a0a14';
+  ctx.fillRect(0,0,CW,CH);
+
+  if(gameState!=='home'&&gameState!=='lobby'&&gameState!=='countdown'){
+    ctx.save();
+    ctx.translate(-camX,-camY);
+
+    // Map floor
+    ctx.fillStyle='#12121f';
+    ctx.fillRect(0,0,MAP_W,MAP_H);
+
+    // Grid
+    ctx.strokeStyle='rgba(99,102,241,0.06)';
+    ctx.lineWidth=1;
+    for(let x=0;x<MAP_W;x+=50){
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,MAP_H); ctx.stroke();
+    }
+    for(let y=0;y<MAP_H;y+=50){
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(MAP_W,y); ctx.stroke();
+    }
+
+    // Spawn zones
+    ctx.fillStyle='rgba(239,68,68,0.05)';
+    ctx.fillRect(0,0,120,MAP_H);
+    ctx.fillStyle='rgba(59,130,246,0.05)';
+    ctx.fillRect(MAP_W-120,0,120,MAP_H);
+
+    // Border
+    ctx.strokeStyle='#6366f133';
+    ctx.lineWidth=4;
+    ctx.strokeRect(2,2,MAP_W-4,MAP_H-4);
+
+    // ── Walls ──
+    for(const w of walls){
+      // Shadow
+      ctx.fillStyle='rgba(0,0,0,0.5)';
+      ctx.fillRect(w.x+4,w.y+4,w.w,w.h);
+      // Body
+      const wg=ctx.createLinearGradient(w.x,w.y,w.x+w.w,w.y+w.h);
+      wg.addColorStop(0,'#2a2a4a');
+      wg.addColorStop(1,'#1a1a2e');
+      ctx.fillStyle=wg;
+      ctx.fillRect(w.x,w.y,w.w,w.h);
+      // Top highlight
+      ctx.fillStyle='rgba(99,102,241,0.15)';
+      ctx.fillRect(w.x,w.y,w.w,4);
+      // Border
+      ctx.strokeStyle='#6366f144';
+      ctx.lineWidth=1;
+      ctx.strokeRect(w.x,w.y,w.w,w.h);
+    }
+
+    // ── Mines ──
+    for(const m of mines){
+      ctx.save();
+      ctx.translate(m.x,m.y);
+      // Blink animation
+      const blink=Math.sin(Date.now()/200)>0;
+      ctx.beginPath(); ctx.arc(0,0,8,0,Math.PI*2);
+      ctx.fillStyle=blink?m.color+'cc':'#1a1a1a';
+      ctx.fill();
+      ctx.strokeStyle=m.color;
+      ctx.lineWidth=2; ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── Bullets ──
+    for(const b of bullets){
+      ctx.save();
+      ctx.translate(b.x,b.y);
+      // Glow
+      ctx.beginPath(); ctx.arc(0,0,8,0,Math.PI*2);
+      ctx.fillStyle=b.color+'33'; ctx.fill();
+      // Core
+      ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2);
+      ctx.fillStyle=b.color; ctx.fill();
+      ctx.restore();
+    }
+
+    // ── Players ──
+    for(const id in players){
+      const p=players[id];
+      drawPlayer(p, id===myId);
+    }
+
+    // ── Particles ──
+    for(const p of particles){
+      ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0.5,p.r*p.life),0,Math.PI*2);
+      ctx.fillStyle=p.color+Math.round(p.life*220).toString(16).padStart(2,'0');
+      ctx.fill();
+      p.x+=p.vx*dt; p.y+=p.vy*dt;
+      p.vy+=0.08*dt; p.vx*=0.95; p.life-=0.025*dt;
+    }
+    particles=particles.filter(p=>p.life>0);
+
+    ctx.restore(); // end world transform
+
+    // ── Joysticks (screen space) ──
+    if(gameState==='playing'){
+      drawJoystick(moveJoy,'rgba(255,255,255,0.08)','rgba(255,255,255,0.25)');
+      if(aimJoy.active) drawJoystick(aimJoy,'rgba(99,102,241,0.15)','rgba(99,102,241,0.5)');
+      // Controls hint
+      if(!moveJoy.active&&!aimJoy.active){
+        ctx.font='10px monospace';
+        ctx.fillStyle='rgba(255,255,255,0.08)';
+        ctx.textAlign='center';
+        ctx.fillText('LEFT: move',CW*0.25,CH-12);
+        ctx.fillText('RIGHT: aim+fire · tap=ability',CW*0.72,CH-12);
+      }
+    }
+  }
+
+  animId=requestAnimationFrame(draw);
+}
+
+function drawPlayer(p, isSelf){
+  if(!p.alive) return;
+  const h=HEROES[p.heroKey]||HEROES.blaze;
+  const isRed=p.team==='red';
+  const teamColor=isRed?'#ef4444':'#3b82f6';
+
   ctx.save();
-  ctx.translate(sx,sy);
+  ctx.translate(p.x,p.y);
 
-  // ── Sky background ──
-  const skyGrd=ctx.createLinearGradient(0,0,0,H*0.65);
-  skyGrd.addColorStop(0,'#0d0d1a');
-  skyGrd.addColorStop(1,'#1a1030');
-  ctx.fillStyle=skyGrd; ctx.fillRect(-10,-10,W+20,H*0.65+10);
+  // Shadow
+  ctx.beginPath(); ctx.ellipse(0,6,14,5,0,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fill();
 
-  // Stars
-  for(const s of stars){
-    s.tw+=s.spd*dt;
-    const a=s.a*(0.6+0.4*Math.sin(s.tw));
-    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
-    ctx.fillStyle=`rgba(220,220,255,${a})`; ctx.fill();
+  // Team glow
+  if(isSelf){
+    ctx.beginPath(); ctx.arc(0,0,26,0,Math.PI*2);
+    ctx.fillStyle=teamColor+'22'; ctx.fill();
   }
 
-  // ── Ground / arena ──
-  groundY=H*0.62;
-  // Dirt ground
-  const groundGrd=ctx.createLinearGradient(0,groundY,0,H);
-  groundGrd.addColorStop(0,'#2d1f0e');
-  groundGrd.addColorStop(0.3,'#1a1208');
-  groundGrd.addColorStop(1,'#0a0804');
-  ctx.fillStyle=groundGrd; ctx.fillRect(-10,groundY,W+20,H-groundY+10);
+  // Body
+  ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2);
+  const bg=ctx.createRadialGradient(-5,-6,1,0,0,16);
+  bg.addColorStop(0,lighten(h.color,50));
+  bg.addColorStop(1,h.color);
+  ctx.fillStyle=bg; ctx.fill();
 
-  // Arena circle (dohyo)
-  const arenaX=W/2, arenaY=groundY+10, arenaRX=200, arenaRY=55;
-  // Sand
-  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX,arenaRY,0,0,Math.PI*2);
-  const sandGrd=ctx.createRadialGradient(arenaX,arenaY,20,arenaX,arenaY,arenaRX);
-  sandGrd.addColorStop(0,'#c8a86a');
-  sandGrd.addColorStop(0.7,'#b8944a');
-  sandGrd.addColorStop(1,'#a07830');
-  ctx.fillStyle=sandGrd; ctx.fill();
-  // Straw border
-  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX,arenaRY,0,0,Math.PI*2);
-  ctx.strokeStyle='#7a5a20'; ctx.lineWidth=8; ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(arenaX,arenaY,arenaRX-4,arenaRY-2,0,0,Math.PI*2);
-  ctx.strokeStyle='#c8a040'; ctx.lineWidth=3; ctx.stroke();
-  // Center line
-  ctx.beginPath(); ctx.moveTo(arenaX,arenaY-arenaRY+8); ctx.lineTo(arenaX,arenaY+arenaRY-8);
-  ctx.strokeStyle='#7a5a2044'; ctx.lineWidth=2; ctx.stroke();
+  // Team ring
+  ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2);
+  ctx.strokeStyle=teamColor;
+  ctx.lineWidth=isSelf?2.5:1.5; ctx.stroke();
 
-  // ── Rope / tug bar ──
-  if(gameState==='playing'||gameState==='results'){
-    ropePulse=Math.max(0,ropePulse-0.05*dt);
-    const barY=groundY-160;
-    const barL=60, barR=W-60;
-    const barLen=barR-barL;
+  // Hero icon (text)
+  ctx.font='12px monospace';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillText(h.icon,0,0);
 
-    // Bar track
-    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barR,barY);
-    ctx.strokeStyle='#2a1a0a'; ctx.lineWidth=12; ctx.lineCap='round'; ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barR,barY);
-    ctx.strokeStyle='#5a3a10'; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
+  // HP bar
+  const hpPct=Math.max(0,p.hp/p.maxHp);
+  const bw=34;
+  ctx.fillStyle='#0a0a14';
+  ctx.fillRect(-bw/2,-24,bw,5);
+  ctx.fillStyle=hpPct>0.5?'#34d399':hpPct>0.25?'#fbbf24':'#ef4444';
+  ctx.fillRect(-bw/2,-24,bw*hpPct,5);
+  ctx.strokeStyle='rgba(255,255,255,0.1)';
+  ctx.lineWidth=0.5;
+  ctx.strokeRect(-bw/2,-24,bw,5);
 
-    // Left fill (left player color)
-    const lp=players[leftId];
-    const rp=players[rightId];
-    const fillX=barL+ropePos*barLen;
-    if(lp){
-      ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(fillX,barY);
-      ctx.strokeStyle=lp.color; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
-    }
-    if(rp){
-      ctx.beginPath(); ctx.moveTo(fillX,barY); ctx.lineTo(barR,barY);
-      ctx.strokeStyle=rp.color; ctx.lineWidth=8; ctx.lineCap='round'; ctx.stroke();
-    }
+  // Name
+  ctx.font=`${isSelf?'bold ':''}9px monospace`;
+  ctx.fillStyle=isSelf?'#ffffff':'#a0a0b8';
+  ctx.textBaseline='alphabetic';
+  ctx.fillText(p.name,0,-27);
 
-    // Danger zones
-    ctx.beginPath(); ctx.moveTo(barL,barY); ctx.lineTo(barL+barLen*0.15,barY);
-    ctx.strokeStyle='rgba(239,68,68,0.4)'; ctx.lineWidth=8; ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(barR-barLen*0.15,barY); ctx.lineTo(barR,barY);
-    ctx.strokeStyle='rgba(239,68,68,0.4)'; ctx.lineWidth=8; ctx.stroke();
-
-    // Knot (rope marker)
-    const kx=barL+ropePos*barLen;
-    const glow=0.5+ropePulse*0.5;
-    ctx.beginPath(); ctx.arc(kx,barY,14,0,Math.PI*2);
-    ctx.fillStyle=`rgba(255,255,255,${glow*0.15})`; ctx.fill();
-    ctx.beginPath(); ctx.arc(kx,barY,10,0,Math.PI*2);
-    ctx.fillStyle='#fff'; ctx.fill();
-    ctx.beginPath(); ctx.arc(kx,barY,10,0,Math.PI*2);
-    ctx.strokeStyle='#888'; ctx.lineWidth=2; ctx.stroke();
-    // Knot detail
-    ctx.beginPath(); ctx.arc(kx-2,barY-2,3,0,Math.PI*2);
-    ctx.fillStyle='#ccc'; ctx.fill();
-
-    // Edge markers
-    ctx.fillStyle='rgba(239,68,68,0.8)';
-    ctx.font='bold 11px monospace'; ctx.textAlign='center';
-    ctx.fillText('OUT',barL,barY-18);
-    ctx.fillText('OUT',barR,barY-18);
-
-    // Arrow hints showing who's winning
-    if(ropePos<0.45&&lp){
-      ctx.fillStyle=lp.color+'cc';
-      ctx.font='16px monospace'; ctx.textAlign='center';
-      ctx.fillText('◀◀',kx-20,barY-28);
-    } else if(ropePos>0.55&&rp){
-      ctx.fillStyle=rp.color+'cc';
-      ctx.font='16px monospace'; ctx.textAlign='center';
-      ctx.fillText('▶▶',kx+20,barY-28);
-    }
+  // Ability ready indicator
+  if(p.abilityCooldown===0){
+    ctx.beginPath(); ctx.arc(0,0,19,0,Math.PI*2);
+    ctx.strokeStyle=h.color+'88'; ctx.lineWidth=1.5;
+    ctx.setLineDash([3,4]); ctx.stroke(); ctx.setLineDash([]);
   }
-
-  // ── Sumo wrestlers ──
-  if(gameState==='playing'||gameState==='results'){
-    const lp=players[leftId], rp=players[rightId];
-    // Player positions driven by ropePos
-    // ropePos 0.5 = center, <0.5 = left winning, >0.5 = right winning
-    const baseGap=100;
-    const push=(ropePos-0.5)*2; // -1 to 1
-    const leftX=W/2-baseGap+push*60;
-    const rightX=W/2+baseGap+push*60;
-    const sy2=groundY-42;
-    const squish=Math.abs(push)*0.5;
-
-    if(lp) drawSumo(leftX,sy2,lp.color,1,squish,leftId===myId);
-    if(rp) drawSumo(rightX,sy2,rp.color,-1,squish,rightId===myId);
-
-    // Tap zone indicators
-    const isLeft=myId===leftId;
-    ctx.fillStyle='rgba(255,255,255,0.03)';
-    ctx.fillRect(0,H-80,W,80);
-    ctx.font='bold 13px monospace'; ctx.textAlign='center';
-    ctx.fillStyle='rgba(255,255,255,0.15)';
-    ctx.fillText('TAP ANYWHERE TO PUSH',W/2,H-48);
-    ctx.font='11px monospace';
-    ctx.fillStyle='rgba(255,255,255,0.08)';
-    ctx.fillText(isLeft?'YOU ARE LEFT':'YOU ARE RIGHT',W/2,H-26);
-  }
-
-  // ── Particles ──
-  for(const p of particles){
-    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0.5,p.r*p.life),0,Math.PI*2);
-    const alpha=Math.round(p.life*220).toString(16).padStart(2,'0');
-    ctx.fillStyle=p.color+alpha; ctx.fill();
-    p.x+=p.vx*dt; p.y+=p.vy*dt;
-    p.vy+=0.15*dt; p.vx*=0.95;
-    p.life-=0.025*dt;
-  }
-  particles=particles.filter(p=>p.life>0);
 
   ctx.restore();
-  animId=requestAnimationFrame(draw);
+}
+
+function drawJoystick(joy,bgColor,knobColor){
+  if(!joy.active) return;
+  const r=45, kr=18;
+  ctx.beginPath(); ctx.arc(joy.startX,joy.startY,r,0,Math.PI*2);
+  ctx.fillStyle=bgColor; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1; ctx.stroke();
+
+  const dx=joy.curX-joy.startX, dy=joy.curY-joy.startY;
+  const len=Math.sqrt(dx*dx+dy*dy);
+  const kx=joy.startX+(len>r?dx/len*r:dx);
+  const ky=joy.startY+(len>r?dy/len*r:dy);
+  ctx.beginPath(); ctx.arc(kx,ky,kr,0,Math.PI*2);
+  ctx.fillStyle=knobColor; ctx.fill();
 }
 
 function lighten(hex,amt){
   const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return `rgb(${Math.min(255,r+amt)},${Math.min(255,g+amt)},${Math.min(255,b+amt)})`;
 }
-function darken(hex,amt){
-  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
-  return `rgb(${Math.max(0,r-amt)},${Math.max(0,g-amt)},${Math.max(0,b-amt)})`;
-}
+
 function startRenderLoop(){
   if(animId) cancelAnimationFrame(animId);
   lastTime=performance.now();

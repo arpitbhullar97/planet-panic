@@ -4,68 +4,101 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="theme-color" content="#0d0d1a"/>
-  <title>Sumo Push</title>
+  <meta name="theme-color" content="#0a0a14"/>
+  <title>Brawlshift</title>
   <link rel="manifest" href="manifest.json"/>
   <style>
     *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-    html,body{width:100%;height:100%;background:#0d0d1a;overflow:hidden;font-family:monospace;color:#e2e8f0;}
-    #app{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+    html,body{width:100%;height:100%;background:#0a0a14;overflow:hidden;font-family:monospace;color:#e2e8f0;}
+    #app{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative;}
     canvas{display:block;touch-action:none;}
-    .screen{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;}
+
+    /* ── Screens ── */
+    .screen{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;gap:12px;padding:20px;z-index:10;}
     .screen.hidden{display:none;}
-    .game-title{font-size:34px;letter-spacing:5px;color:#f97316;text-shadow:0 0 30px #f9731655;text-align:center;line-height:1.2;}
-    .game-sub{font-size:11px;letter-spacing:2px;color:#3a3a4a;text-align:center;}
-    .label{font-size:10px;letter-spacing:1px;color:#4a5568;text-transform:uppercase;margin-bottom:4px;}
+    .game-title{font-size:32px;letter-spacing:6px;text-align:center;line-height:1.15;}
+    .game-sub{font-size:11px;letter-spacing:2px;color:#3a3a5a;text-align:center;line-height:1.6;}
+    .label{font-size:10px;letter-spacing:1px;color:#4a5568;text-transform:uppercase;margin-bottom:3px;}
     input{background:#111827;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;
-      font-family:monospace;font-size:15px;padding:12px 16px;width:100%;max-width:280px;
+      font-family:monospace;font-size:14px;padding:11px 14px;width:100%;max-width:290px;
       outline:none;text-align:center;letter-spacing:1px;}
-    input:focus{border-color:#f97316;}
+    input:focus{border-color:#6366f1;}
     input::placeholder{color:#2d3748;}
-    .btn{padding:13px 32px;border-radius:8px;font-family:monospace;font-size:13px;
-      letter-spacing:2px;cursor:pointer;border:1px solid;width:100%;max-width:280px;transition:transform 0.1s;}
+    .btn{padding:12px 28px;border-radius:8px;font-family:monospace;font-size:12px;letter-spacing:2px;
+      cursor:pointer;border:1px solid;width:100%;max-width:290px;transition:transform 0.1s;}
     .btn:active{transform:scale(0.97);}
-    .btn-primary{background:#f9731622;border-color:#f97316;color:#fdba74;}
+    .btn-primary{background:#6366f122;border-color:#6366f1;color:#a5b4fc;}
     .btn-secondary{background:transparent;border-color:#2d3748;color:#718096;}
-    .btn-start{background:#059669;border-color:#34d399;color:#d1fae5;font-size:14px;}
+    .btn-start{background:#059669;border-color:#34d399;color:#d1fae5;font-size:13px;}
+    .btn-red{background:#ef444422;border-color:#ef4444;color:#fca5a5;}
+    .btn-blue{background:#3b82f622;border-color:#3b82f6;color:#93c5fd;}
+
+    /* ── Room / Lobby ── */
     .room-code-box{background:#111827;border:1px solid #2d3748;border-radius:10px;
-      padding:14px 24px;text-align:center;width:100%;max-width:280px;}
-    .room-code{font-size:30px;letter-spacing:6px;color:#fdba74;}
-    #player-list{width:100%;max-width:280px;display:flex;flex-direction:column;gap:6px;}
-    .player-item{display:flex;align-items:center;gap:10px;background:#111827;
-      border-radius:8px;padding:8px 12px;font-size:13px;}
-    .player-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
-    .player-host{font-size:10px;color:#4a5568;margin-left:auto;}
+      padding:12px 22px;text-align:center;width:100%;max-width:290px;}
+    .room-code{font-size:28px;letter-spacing:6px;color:#a5b4fc;}
+    #player-list{width:100%;max-width:290px;display:flex;flex-direction:column;gap:5px;max-height:160px;overflow-y:auto;}
+    .player-item{display:flex;align-items:center;gap:8px;background:#111827;
+      border-radius:7px;padding:7px 11px;font-size:12px;}
+    .player-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+    .player-host{font-size:9px;color:#4a5568;margin-left:auto;}
+    .team-badge{font-size:9px;padding:1px 7px;border-radius:10px;margin-left:4px;}
 
-    /* HUD — tap counters above each player */
-    #hud{position:absolute;top:0;left:0;right:0;pointer-events:none;padding:10px 16px;
-      display:flex;justify-content:space-between;align-items:flex-start;}
-    .hud-block{display:flex;flex-direction:column;align-items:center;}
-    .hud-label{font-size:9px;letter-spacing:2px;color:#2d3748;text-transform:uppercase;}
-    .hud-val{font-size:18px;color:#e2e8f0;line-height:1;}
-    #left-name{font-size:11px;color:#f97316;font-weight:bold;letter-spacing:1px;}
-    #right-name{font-size:11px;color:#6366f1;font-weight:bold;letter-spacing:1px;}
-    #left-taps{font-size:20px;color:#f97316;}
-    #right-taps{font-size:20px;color:#6366f1;}
+    /* ── Hero picker ── */
+    #hero-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;width:100%;max-width:290px;}
+    .hero-card{background:#111827;border:1px solid #2d3748;border-radius:8px;padding:8px 6px;
+      text-align:center;cursor:pointer;transition:all 0.15s;}
+    .hero-card:active{transform:scale(0.95);}
+    .hero-card.selected{border-color:#6366f1;background:#6366f115;}
+    .hero-icon{font-size:22px;margin-bottom:3px;}
+    .hero-card-name{font-size:10px;color:#e2e8f0;letter-spacing:1px;}
+    .hero-card-role{font-size:9px;color:#4a5568;}
 
-    #countdown-num{font-size:100px;color:#f97316;text-shadow:0 0 60px #f97316;animation:pop 0.4s ease-out;}
+    /* ── HUD (in-game) ── */
+    #hud{position:absolute;top:0;left:0;right:0;z-index:5;pointer-events:none;}
+    #score-bar{display:flex;justify-content:space-between;align-items:center;
+      padding:8px 12px;background:rgba(0,0,0,0.6);}
+    .team-score{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:bold;letter-spacing:2px;}
+    .score-num{font-size:20px;line-height:1;}
+    #round-info{text-align:center;font-size:10px;color:#4a5568;letter-spacing:2px;}
+    #my-hero-bar{position:absolute;bottom:0;left:0;right:0;pointer-events:none;
+      padding:8px 12px;background:rgba(0,0,0,0.55);display:flex;align-items:center;
+      justify-content:space-between;gap:8px;}
+    .hp-wrap{flex:1;}
+    .hp-label{font-size:9px;color:#4a5568;letter-spacing:1px;}
+    .hp-track{height:6px;background:#1a1a2e;border-radius:4px;margin-top:2px;}
+    .hp-fill{height:6px;border-radius:4px;transition:width 0.1s;}
+    .ability-btn-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;pointer-events:all;}
+    .ability-label{font-size:8px;color:#6366f1;letter-spacing:1px;}
+    .ability-cd{font-size:10px;color:#4a5568;}
+    #hero-name-hud{font-size:10px;letter-spacing:1px;color:#a5b4fc;text-align:center;}
+
+    /* ── Countdown ── */
+    #countdown-num{font-size:100px;text-shadow:0 0 60px currentColor;animation:pop 0.4s ease-out;}
     @keyframes pop{0%{transform:scale(2.2);opacity:0}100%{transform:scale(1);opacity:1}}
-    .winner-name{font-size:24px;letter-spacing:2px;}
-    .score-row{display:flex;align-items:center;gap:10px;font-size:14px;width:100%;max-width:280px;}
+
+    /* ── Results ── */
+    .win-title{font-size:26px;letter-spacing:4px;font-weight:bold;}
+    .score-row{display:flex;align-items:center;gap:8px;font-size:12px;width:100%;max-width:280px;}
     .score-row-inner{display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;}
-    .score-rank{color:#4a5568;font-size:11px;width:16px;}
-    .score-name{flex:1;}
-    .score-pts{font-family:monospace;}
 
-    #tap-hint{position:absolute;top:56px;left:50%;transform:translateX(-50%);
-      font-size:11px;color:#2d3748;letter-spacing:2px;pointer-events:none;
-      animation:blink 1.8s ease-in-out infinite;white-space:nowrap;}
-    @keyframes blink{0%,100%{opacity:.2}50%{opacity:.9}}
+    /* ── Round banner ── */
+    #round-banner{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+      z-index:20;font-size:18px;letter-spacing:3px;pointer-events:none;
+      background:rgba(0,0,0,0.82);padding:14px 28px;border-radius:10px;
+      display:none;text-align:center;}
 
-    #toast{position:absolute;bottom:100px;left:50%;transform:translateX(-50%);
-      background:#dc2626;color:white;padding:8px 20px;border-radius:8px;
-      font-size:12px;letter-spacing:1px;opacity:0;transition:opacity 0.3s;
-      pointer-events:none;white-space:nowrap;}
+    /* ── Respawn banner ── */
+    #respawn-banner{position:absolute;top:45%;left:50%;transform:translate(-50%,-50%);
+      z-index:20;font-size:13px;letter-spacing:2px;color:#f87171;pointer-events:none;
+      display:none;}
+
+    /* ── Toast ── */
+    #toast{position:absolute;bottom:90px;left:50%;transform:translateX(-50%);
+      background:#dc2626;color:#fff;padding:7px 18px;border-radius:7px;
+      font-size:11px;letter-spacing:1px;opacity:0;transition:opacity 0.3s;
+      pointer-events:none;white-space:nowrap;z-index:30;}
     #toast.show{opacity:1;}
   </style>
 </head>
@@ -73,68 +106,128 @@
 <div id="app">
   <canvas id="gc"></canvas>
 
+  <!-- HUD -->
   <div id="hud" class="hidden">
-    <div class="hud-block">
-      <div id="left-name"></div>
-      <div id="left-taps"></div>
+    <div id="score-bar">
+      <div class="team-score" style="color:#ef4444;">
+        <span>🔴 RED</span>
+        <span class="score-num" id="red-score">0</span>
+      </div>
+      <div id="round-info">FIRST TO 5 KILLS</div>
+      <div class="team-score" style="color:#3b82f6;flex-direction:row-reverse;">
+        <span>🔵 BLUE</span>
+        <span class="score-num" id="blue-score">0</span>
+      </div>
     </div>
-    <div class="hud-block" style="align-items:center;">
-      <div class="hud-label">taps</div>
-    </div>
-    <div class="hud-block" style="align-items:flex-end;">
-      <div id="right-name"></div>
-      <div id="right-taps"></div>
+    <div id="my-hero-bar">
+      <div class="hp-wrap">
+        <div class="hp-label">HP</div>
+        <div class="hp-track"><div class="hp-fill" id="hp-fill" style="width:100%;background:#34d399;"></div></div>
+      </div>
+      <div style="text-align:center;">
+        <div id="hero-name-hud">BLAZE</div>
+        <div style="font-size:9px;color:#4a5568;letter-spacing:1px;" id="kills-hud">0 kills</div>
+      </div>
+      <div class="ability-btn-wrap">
+        <div class="ability-label" id="ability-name-hud">ABILITY</div>
+        <div class="ability-cd" id="ability-cd-hud">READY</div>
+      </div>
     </div>
   </div>
 
-  <div id="tap-hint" class="hidden">tap anywhere — tap faster to win!</div>
+  <div id="round-banner"></div>
+  <div id="respawn-banner">RESPAWNING...</div>
   <div id="toast"></div>
 
-  <!-- Home -->
+  <!-- ── HOME ── -->
   <div id="screen-home" class="screen">
-    <div class="game-title">🏆<br>SUMO<br>PUSH</div>
-    <div class="game-sub">tap faster than your opponent<br>push them out of the ring</div>
-    <div style="height:8px;"></div>
+    <div class="game-title" style="color:#6366f1;">BRAWL<br><span style="color:#ef4444;">SHIFT</span></div>
+    <div class="game-sub">3v3 hero brawler · real-time<br>pick a hero · fight as a team</div>
+    <div style="height:4px;"></div>
     <div class="label">your name</div>
-    <input id="input-name" type="text" maxlength="12" placeholder="enter name" autocomplete="off"/>
+    <input id="input-name" type="text" maxlength="10" placeholder="enter name" autocomplete="off"/>
+    <div class="label" style="margin-top:4px;">pick your hero</div>
+    <div id="hero-grid">
+      <div class="hero-card selected" data-hero="blaze" onclick="selectHero(this)">
+        <div class="hero-icon">🔥</div>
+        <div class="hero-card-name">BLAZE</div>
+        <div class="hero-card-role">damage</div>
+      </div>
+      <div class="hero-card" data-hero="vault" onclick="selectHero(this)">
+        <div class="hero-icon">🛡️</div>
+        <div class="hero-card-name">VAULT</div>
+        <div class="hero-card-role">tank</div>
+      </div>
+      <div class="hero-card" data-hero="pulse" onclick="selectHero(this)">
+        <div class="hero-icon">💚</div>
+        <div class="hero-card-name">PULSE</div>
+        <div class="hero-card-role">support</div>
+      </div>
+      <div class="hero-card" data-hero="shade" onclick="selectHero(this)">
+        <div class="hero-icon">👻</div>
+        <div class="hero-card-name">SHADE</div>
+        <div class="hero-card-role">assassin</div>
+      </div>
+      <div class="hero-card" data-hero="vex" onclick="selectHero(this)">
+        <div class="hero-icon">🎯</div>
+        <div class="hero-card-name">VEX</div>
+        <div class="hero-card-role">sniper</div>
+      </div>
+      <div class="hero-card" data-hero="kova" onclick="selectHero(this)">
+        <div class="hero-icon">💣</div>
+        <div class="hero-card-name">KOVA</div>
+        <div class="hero-card-role">trapper</div>
+      </div>
+    </div>
     <button class="btn btn-primary" onclick="goCreate()">create room</button>
     <button class="btn btn-secondary" onclick="goJoin()">join room</button>
   </div>
 
-  <!-- Join -->
+  <!-- ── JOIN ── -->
   <div id="screen-join" class="screen hidden">
-    <div class="game-title" style="font-size:22px;">join game</div>
+    <div class="game-title" style="font-size:22px;color:#6366f1;">join game</div>
     <div class="label">room code</div>
     <input id="input-code" type="text" maxlength="5" placeholder="XXXXX"
-      autocomplete="off" style="text-transform:uppercase;font-size:22px;letter-spacing:6px;"/>
+      autocomplete="off" style="text-transform:uppercase;font-size:20px;letter-spacing:5px;"/>
     <button class="btn btn-primary" onclick="joinRoom()">join</button>
     <button class="btn btn-secondary" onclick="showScreen('screen-home')">back</button>
   </div>
 
-  <!-- Lobby -->
+  <!-- ── LOBBY ── -->
   <div id="screen-lobby" class="screen hidden">
-    <div class="game-title" style="font-size:22px;">lobby</div>
+    <div class="game-title" style="font-size:20px;color:#6366f1;">lobby</div>
     <div class="room-code-box">
-      <div class="label">room code — share with 1 friend</div>
+      <div class="label">share this code</div>
       <div class="room-code" id="lobby-code">-----</div>
+    </div>
+    <div style="width:100%;max-width:290px;display:flex;gap:8px;font-size:10px;color:#4a5568;letter-spacing:1px;padding:0 2px;">
+      <span style="color:#ef4444;">■ RED TEAM</span>
+      <span style="margin-left:auto;color:#3b82f6;">BLUE TEAM ■</span>
     </div>
     <div id="player-list"></div>
     <button class="btn btn-start" id="btn-start" onclick="startGame()" style="display:none;">start match!</button>
-    <div class="game-sub" id="waiting-msg">waiting for host to start...</div>
+    <div class="game-sub" id="waiting-msg">waiting for host...</div>
     <button class="btn btn-secondary" onclick="leaveRoom()">leave</button>
   </div>
 
-  <!-- Countdown -->
+  <!-- ── COUNTDOWN ── -->
   <div id="screen-countdown" class="screen hidden" style="pointer-events:none;">
-    <div id="countdown-num">3</div>
-    <div style="font-size:14px;color:#4a5568;letter-spacing:3px;margin-top:8px;">TAP TO WIN</div>
+    <div id="countdown-num" style="color:#6366f1;">3</div>
+    <div style="font-size:13px;color:#4a5568;letter-spacing:3px;margin-top:6px;">FIGHT!</div>
   </div>
 
-  <!-- Results -->
+  <!-- ── RESULTS ── -->
   <div id="screen-results" class="screen hidden">
-    <div class="game-sub">🏆 winner</div>
-    <div class="winner-name" id="winner-name">---</div>
-    <div class="score-row-inner" id="results-scores"></div>
+    <div class="win-title" id="win-title">RED WINS</div>
+    <div class="game-sub" id="win-sub"></div>
+    <div class="score-row-inner" id="results-list" style="margin-top:8px;"></div>
+    <div class="game-sub" style="margin-top:10px;color:#2d3748;">next round starting...</div>
+  </div>
+
+  <!-- ── MATCH END ── -->
+  <div id="screen-match-end" class="screen hidden">
+    <div class="win-title" id="match-win-title">RED WINS THE MATCH!</div>
+    <div class="score-row-inner" id="match-results-list" style="margin-top:8px;"></div>
     <div class="game-sub" style="margin-top:12px;color:#2d3748;">returning to lobby...</div>
   </div>
 </div>
